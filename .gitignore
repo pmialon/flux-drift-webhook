@@ -1,0 +1,6 @@
+bin/
+coverage.out
+coverage.html
+coverage.xml
+output/
+dist/
