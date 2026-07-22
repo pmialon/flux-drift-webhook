@@ -1,0 +1,22 @@
+apiVersion: v2
+name: flux-drift-webhook
+description: Validating admission webhook that prevents manual drift on FluxCD-managed resources
+type: application
+# Chart SemVer and default image tag. CI overrides both with the git tag at
+# package time (helm package --version/--app-version "${GITHUB_REF_NAME#v}").
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - flux
+  - gitops
+  - admission-webhook
+  - drift-detection
+home: https://github.com/pmialon/flux-drift-webhook
+sources:
+  - https://github.com/pmialon/flux-drift-webhook
+maintainers:
+  - name: Pierre-Gilles Mialon
+    url: https://github.com/pmialon
+annotations:
+  artifacthub.io/prerelease: "true"

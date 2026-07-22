@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: flux-system
+
+resources:
+  - flux-drift-webhook-serviceaccount.yaml
+  - flux-drift-webhook-clusterrole.yaml
+  - flux-drift-webhook-clusterrolebinding.yaml
+  - flux-drift-webhook-service.yaml
+  - flux-drift-webhook-deployment.yaml
+  - flux-drift-webhook-horizontalpodautoscaler.yaml
+  - flux-drift-webhook-poddisruptionbudget.yaml
+  - flux-drift-webhook-networkpolicy.yaml
+  - flux-drift-webhook-certificate.yaml
+  - flux-drift-webhook-validatingwebhookconfiguration.yaml
+  - flux-drift-webhook-podmonitor.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: flux-drift-webhook
+      app.kubernetes.io/component: webhook
+      app.kubernetes.io/part-of: flux
+    includeSelectors: false

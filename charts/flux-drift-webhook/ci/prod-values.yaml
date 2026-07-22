@@ -1,0 +1,4 @@
+# Prod environment overrides — mirrors deploy/overlays/prod (currently audit-only;
+# flip config.auditOnly to false to enforce once dual-ownership is resolved).
+config:
+  auditOnly: true

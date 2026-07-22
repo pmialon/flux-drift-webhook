@@ -1,0 +1,32 @@
+{{- if .Values.certManager.enabled -}}
+{{- if .Values.certManager.issuer.create }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "flux-drift-webhook.issuerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "flux-drift-webhook.certName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "flux-drift-webhook.tlsSecretName" . }}
+  dnsNames:
+    - {{ include "flux-drift-webhook.serviceName" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "flux-drift-webhook.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    name: {{ include "flux-drift-webhook.issuerName" . }}
+    kind: {{ .Values.certManager.issuer.kind }}
+  privateKey:
+    algorithm: {{ .Values.certManager.certificate.privateKey.algorithm }}
+    size: {{ .Values.certManager.certificate.privateKey.size }}
+{{- end }}

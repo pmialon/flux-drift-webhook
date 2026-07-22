@@ -1,0 +1,20 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: flux-drift-webhook
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: flux
+    app.kubernetes.io/component: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+    - flux-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flux-drift-webhook
+  podMetricsEndpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
