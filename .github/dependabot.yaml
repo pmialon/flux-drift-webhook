@@ -1,0 +1,43 @@
+version: 2
+
+updates:
+  - package-ecosystem: "gomod"
+    labels: ["dependencies"]
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      flux-deps:
+        patterns:
+          - "github.com/fluxcd/*"
+      k8s-deps:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      misc-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "github.com/fluxcd/*"
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+    allow:
+      - dependency-type: "direct"
+  - package-ecosystem: "github-actions"
+    labels: ["dependencies"]
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      ci:
+        patterns:
+          - "*"
+  - package-ecosystem: "docker"
+    labels: ["dependencies"]
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      docker:
+        patterns:
+          - "*"

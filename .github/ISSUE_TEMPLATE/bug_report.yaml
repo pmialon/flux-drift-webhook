@@ -1,0 +1,70 @@
+---
+name: Bug report
+description: Report a problem to help improve flux-drift-webhook
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in as much of the
+        information below as you can — it helps us reproduce and fix the issue faster.
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Describe the bug
+      description: A clear description of what the bug is.
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the behaviour.
+      placeholder: |
+        1. Deploy the webhook in <audit|enforce> mode
+        2. Apply / edit / delete resource '...'
+        3. Observe the admission decision
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Expected behaviour
+      description: A brief description of what you expected to happen.
+  - type: textarea
+    attributes:
+      label: Admission decision and logs
+      description: |
+        The denial reason returned to `kubectl` (if any), relevant webhook logs
+        (`kubectl logs -n flux-system deploy/flux-drift-webhook`), and the value of the
+        `decision` label from the `flux_drift_webhook_requests_total` metric.
+      render: shell
+  - type: input
+    validations:
+      required: true
+    attributes:
+      label: Webhook version / image tag
+      placeholder: "e.g. v0.1.0, or ghcr.io/pmialon/flux-drift-webhook@sha256:…"
+  - type: input
+    validations:
+      required: true
+    attributes:
+      label: Kubernetes version
+      placeholder: "e.g. v1.30.2"
+  - type: dropdown
+    validations:
+      required: true
+    attributes:
+      label: Webhook mode
+      options:
+        - audit-only
+        - enforce
+  - type: input
+    attributes:
+      label: Flux version
+      placeholder: "e.g. flux 2.3.0"
+  - type: checkboxes
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow this project's [Code of Conduct](../blob/main/CODE_OF_CONDUCT.md)
+          required: true
