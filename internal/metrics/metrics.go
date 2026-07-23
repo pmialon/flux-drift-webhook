@@ -38,7 +38,6 @@ type Metrics struct {
 	denialsTotal            *prometheus.CounterVec
 	ownershipConflictsTotal *prometheus.CounterVec
 	latencySeconds          *prometheus.HistogramVec
-	discoveryErrors         prometheus.Counter
 	configUpdatesTotal      *prometheus.CounterVec
 }
 
@@ -87,12 +86,6 @@ func NewMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{labelOperation},
 		),
-		discoveryErrors: prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: "flux_drift_webhook_discovery_errors_total",
-				Help: "Total number of GVK discovery errors",
-			},
-		),
 		configUpdatesTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "flux_drift_webhook_config_updates_total",
@@ -107,7 +100,6 @@ func NewMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 		m.denialsTotal,
 		m.ownershipConflictsTotal,
 		m.latencySeconds,
-		m.discoveryErrors,
 		m.configUpdatesTotal,
 	)
 
@@ -132,11 +124,6 @@ func (m *Metrics) RecordDenial(operation, kind string) {
 // reconcilers fighting over the same resource.
 func (m *Metrics) RecordOwnershipConflict(kind, previousOwner, newOwner string) {
 	m.ownershipConflictsTotal.WithLabelValues(kind, previousOwner, newOwner).Inc()
-}
-
-// RecordDiscoveryError increments the GVK discovery-error counter.
-func (m *Metrics) RecordDiscoveryError() {
-	m.discoveryErrors.Inc()
 }
 
 // RecordConfigUpdate increments the VWC update counter for the given status

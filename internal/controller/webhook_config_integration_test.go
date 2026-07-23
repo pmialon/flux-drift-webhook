@@ -30,13 +30,11 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	discoveryclient "k8s.io/client-go/discovery"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/pmialon/flux-drift-webhook/internal/config"
-	"github.com/pmialon/flux-drift-webhook/internal/discovery"
 	"github.com/pmialon/flux-drift-webhook/internal/metrics"
 )
 
@@ -44,33 +42,20 @@ import (
 // ("kustomize."/"helm."+itWebhookName) pass apiserver validation.
 const itWebhookName = "flux-drift-webhook-it.fluxcd.io"
 
-// newReconciler builds a reconciler wired like production (cmd/webhook/main.go):
-// a real discovery client off testEnv.Config and the cacheless k8sClient.
+// newReconciler builds a reconciler wired like production (cmd/webhook/main.go),
+// against the cacheless k8sClient.
 func newReconciler(t *testing.T, rec record.EventRecorder) *WebhookConfigReconciler {
 	t.Helper()
-	dc, err := discoveryclient.NewDiscoveryClientForConfig(testEnv.Config)
-	NewWithT(t).Expect(err).NotTo(HaveOccurred())
-
 	return &WebhookConfigReconciler{
-		Client:            k8sClient,
-		Discoverer:        discovery.NewDiscoverer(dc, testr.New(t)),
-		Metrics:           metrics.NewMetricsWithRegistry(prometheus.NewRegistry()),
-		EventRecorder:     rec,
-		WebhookName:       itWebhookName,
-		WebhookNamespace:  "flux-system",
-		WebhookService:    "flux-drift-webhook",
-		WebhookPath:       config.WebhookPath,
-		DiscoveryInterval: 5 * time.Minute,
+		Client:           k8sClient,
+		Metrics:          metrics.NewMetricsWithRegistry(prometheus.NewRegistry()),
+		EventRecorder:    rec,
+		WebhookName:      itWebhookName,
+		WebhookNamespace: "flux-system",
+		WebhookService:   "flux-drift-webhook",
+		WebhookPath:      config.WebhookPath,
+		ResyncInterval:   5 * time.Minute,
 	}
-}
-
-// newMatchConditionsReconciler is newReconciler with wildcard rules and CEL
-// matchConditions enabled.
-func newMatchConditionsReconciler(t *testing.T) *WebhookConfigReconciler {
-	t.Helper()
-	r := newReconciler(t, nil)
-	r.UseMatchConditions = true
-	return r
 }
 
 // seedVWC pre-creates the empty ValidatingWebhookConfiguration the reconciler
@@ -87,10 +72,10 @@ func seedVWC(t *testing.T, g *WithT) {
 	})
 }
 
-// TestIntegration_Reconcile_SSAAndDiscovery exercises the real discovery +
-// Server-Side Apply path against a live apiserver — the field-management
-// semantics and live discovery that the fake client cannot reproduce.
-func TestIntegration_Reconcile_SSAAndDiscovery(t *testing.T) {
+// TestIntegration_Reconcile_SSA exercises the Server-Side Apply path against a
+// live apiserver — the field-management semantics and apiserver defaulting the
+// fake client cannot reproduce.
+func TestIntegration_Reconcile_SSA(t *testing.T) {
 	g := NewWithT(t)
 	// Reconcile reads its logger from the context (ctrl.LoggerFrom).
 	ctx := ctrl.LoggerInto(context.Background(), testr.New(t))
@@ -118,23 +103,14 @@ func TestIntegration_Reconcile_SSAAndDiscovery(t *testing.T) {
 		g.Expect(entry.ObjectSelector.MatchExpressions).To(HaveLen(1))
 	}
 
-	// Rules came from REAL cluster discovery: the core ("" group, v1) and
-	// apps/v1 are always present on any apiserver. Assert PRESENCE only — the
-	// full discovered set is non-deterministic across apiserver versions.
-	g.Expect(wh.Rules).NotTo(BeEmpty())
-	g.Expect(ruleGroups(wh.Rules)).To(ContainElements("", "apps"))
+	// One wildcard rule, accepted and kept by the apiserver.
+	g.Expect(wh.Rules).To(HaveLen(1))
+	g.Expect(ruleGroups(wh.Rules)).To(Equal([]string{"*"}))
 
-	// Cluster-scoped objects are protected too: the apiserver accepted and
-	// kept the explicit AllScopes on every rule.
-	for _, rule := range wh.Rules {
-		g.Expect(rule.Scope).NotTo(BeNil())
-		g.Expect(*rule.Scope).To(Equal(admissionregistrationv1.AllScopes))
-	}
-
-	// The admissionregistration.k8s.io group is filtered out by the Discoverer,
-	// proving the production exclusion runs against live data (and stops the
-	// webhook selecting its own configuration).
-	g.Expect(ruleGroups(wh.Rules)).NotTo(ContainElement(config.ExcludedGroupAdmission))
+	// Cluster-scoped objects are protected too: the apiserver kept the explicit
+	// AllScopes rather than defaulting it away.
+	g.Expect(wh.Rules[0].Scope).NotTo(BeNil())
+	g.Expect(*wh.Rules[0].Scope).To(Equal(admissionregistrationv1.AllScopes))
 
 	// Real SSA field management: the apiserver recorded our FieldOwner as an
 	// Apply entry in managedFields. The fake client never populates this.
@@ -204,7 +180,7 @@ func TestIntegration_Reconcile_MatchConditionsAccepted(t *testing.T) {
 	ctx := ctrl.LoggerInto(context.Background(), testr.New(t))
 	seedVWC(t, g)
 
-	r := newMatchConditionsReconciler(t)
+	r := newReconciler(t, nil)
 
 	_, err := r.Reconcile(ctx, ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: itWebhookName},
@@ -242,7 +218,7 @@ func TestIntegration_Reconcile_MatchConditionsIdempotent(t *testing.T) {
 	ctx := ctrl.LoggerInto(context.Background(), testr.New(t))
 	seedVWC(t, g)
 
-	r := newMatchConditionsReconciler(t)
+	r := newReconciler(t, nil)
 
 	for i := 0; i < 2; i++ {
 		_, err := r.Reconcile(ctx, ctrl.Request{

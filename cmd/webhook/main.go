@@ -32,7 +32,6 @@ import (
 	flag "github.com/spf13/pflag"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	discoveryclient "k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,7 +47,6 @@ import (
 
 	"github.com/pmialon/flux-drift-webhook/internal/config"
 	"github.com/pmialon/flux-drift-webhook/internal/controller"
-	"github.com/pmialon/flux-drift-webhook/internal/discovery"
 	"github.com/pmialon/flux-drift-webhook/internal/metrics"
 	webhookhandler "github.com/pmialon/flux-drift-webhook/internal/webhook"
 )
@@ -69,12 +67,12 @@ func main() {
 		auditOnly             bool
 		fluxNamespace         string
 		webhookName           string
+		vwcResyncInterval     time.Duration
 		discoveryInterval     time.Duration
 		namespaceLabel        string
 		namespaceLabelValue   string
 		namespaceFetchTimeout time.Duration
 		systemControllerSAs   string
-		useMatchConditions    bool
 		kubeAPIQPS            float32
 		kubeAPIBurst          int
 
@@ -84,7 +82,7 @@ func main() {
 
 	// Fail fast on malformed environment values: a typo silently falling back
 	// to a default is worse than a crash at startup.
-	discoveryIntervalDefault, err := getEnvDuration("DISCOVERY_INTERVAL", config.DefaultDiscoveryInterval)
+	resyncDefault, err := resyncIntervalDefault()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -97,7 +95,10 @@ func main() {
 	flag.BoolVar(&auditOnly, "audit-only", false, "Audit-only mode (log without blocking)")
 	flag.StringVar(&fluxNamespace, "flux-namespace", getEnv("FLUX_NAMESPACE", config.FluxNamespaceDefault), "Flux namespace")
 	flag.StringVar(&webhookName, "webhook-name", getEnv("WEBHOOK_NAME", config.WebhookName), "ValidatingWebhookConfiguration name")
-	flag.DurationVar(&discoveryInterval, "discovery-interval", discoveryIntervalDefault, "GVK discovery interval")
+	flag.DurationVar(&vwcResyncInterval, "vwc-resync-interval", resyncDefault,
+		"Interval between ValidatingWebhookConfiguration re-applies")
+	flag.DurationVar(&discoveryInterval, "discovery-interval", resyncDefault,
+		"Deprecated alias for --vwc-resync-interval")
 	flag.StringVar(&namespaceLabel, "namespace-label", "", "Optional: namespace label key to filter webhook scope")
 	flag.StringVar(&namespaceLabelValue, "namespace-label-value", "", "Optional: namespace label value to match (requires namespace-label)")
 	flag.DurationVar(&namespaceFetchTimeout, "namespace-fetch-timeout", webhookhandler.DefaultNamespaceFetchTimeout, "Timeout for namespace label lookups")
@@ -105,9 +106,6 @@ func main() {
 		"Extra control-plane identities (CSV of namespace:name SA shorthands or full system: usernames) "+
 			"allowed to create Flux-labelled derived resources and delete Flux-applied resources; "+
 			"merged with built-in defaults")
-	flag.BoolVar(&useMatchConditions, "use-match-conditions", getEnv("USE_MATCH_CONDITIONS", "") == "true",
-		"Replace the per-GroupVersion webhook rules with a single wildcard rule plus CEL matchConditions "+
-			"(requires Kubernetes >= 1.28; falls back to discovery on older servers)")
 	flag.Float32Var(&kubeAPIQPS, "kube-api-qps", 50.0, "The maximum queries-per-second of requests sent to the Kubernetes API.")
 	flag.IntVar(&kubeAPIBurst, "kube-api-burst", 300, "The maximum burst queries-per-second of requests sent to the Kubernetes API.")
 
@@ -119,6 +117,14 @@ func main() {
 	log := logger.NewLogger(loggerOptions)
 	logger.SetLogger(log)
 
+	// The webhook rules are static since GVK discovery was replaced by a
+	// wildcard rule plus CEL matchConditions, so the interval now only paces
+	// re-applies. The old flag keeps working to avoid breaking deployments.
+	if flag.CommandLine.Changed("discovery-interval") {
+		log.Info("--discovery-interval is deprecated, use --vwc-resync-interval")
+		vwcResyncInterval = discoveryInterval
+	}
+
 	if namespaceLabelValue != "" && namespaceLabel == "" {
 		log.Error(nil, "namespace-label-value requires namespace-label to be set")
 		os.Exit(1)
@@ -127,7 +133,7 @@ func main() {
 	log.Info("starting flux-drift-webhook",
 		"auditOnly", auditOnly,
 		"fluxNamespace", fluxNamespace,
-		"discoveryInterval", discoveryInterval,
+		"vwcResyncInterval", vwcResyncInterval,
 	)
 
 	restConfig := ctrl.GetConfigOrDie()
@@ -163,32 +169,6 @@ func main() {
 
 	m := metrics.NewMetrics()
 
-	discoveryClientInstance, err := discoveryclient.NewDiscoveryClientForConfig(mgr.GetConfig())
-	if err != nil {
-		log.Error(err, "unable to create discovery client")
-		os.Exit(1)
-	}
-
-	disc := discovery.NewDiscoverer(discoveryClientInstance, log)
-
-	// An API server older than 1.28 prunes matchConditions silently, which would
-	// leave the wildcard rule with no group exclusion at all. Verify before
-	// enabling, and fall back to per-GroupVersion discovery rules otherwise.
-	if useMatchConditions {
-		supported, serverVersion, verErr := disc.SupportsMatchConditions()
-		switch {
-		case verErr != nil:
-			log.Error(verErr, "cannot determine API server version; falling back to per-GroupVersion discovery rules")
-			useMatchConditions = false
-		case !supported:
-			log.Info("API server does not support webhook matchConditions; falling back to per-GroupVersion discovery rules",
-				"serverVersion", serverVersion, "required", ">= 1.28")
-			useMatchConditions = false
-		default:
-			log.Info("using wildcard webhook rules with CEL matchConditions", "serverVersion", serverVersion)
-		}
-	}
-
 	handler := &webhookhandler.DriftPreventionHandler{
 		Log:                   log.WithName("webhook"),
 		FluxNamespace:         fluxNamespace,
@@ -213,16 +193,14 @@ func main() {
 	}
 
 	if err := (&controller.WebhookConfigReconciler{
-		Client:             mgr.GetClient(),
-		Discoverer:         disc,
-		Metrics:            m,
-		EventRecorder:      eventRecorder,
-		WebhookName:        webhookName,
-		WebhookNamespace:   fluxNamespace,
-		WebhookService:     "flux-drift-webhook",
-		WebhookPath:        config.WebhookPath,
-		DiscoveryInterval:  discoveryInterval,
-		UseMatchConditions: useMatchConditions,
+		Client:           mgr.GetClient(),
+		Metrics:          m,
+		EventRecorder:    eventRecorder,
+		WebhookName:      webhookName,
+		WebhookNamespace: fluxNamespace,
+		WebhookService:   "flux-drift-webhook",
+		WebhookPath:      config.WebhookPath,
+		ResyncInterval:   vwcResyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to setup webhook config controller")
 		os.Exit(1)
@@ -325,6 +303,18 @@ func warmInformerCaches(mgr ctrl.Manager, log logr.Logger) {
 		}
 		log.V(1).Info("informer registered for initial cache sync", "type", name)
 	}
+}
+
+// resyncIntervalDefault resolves the ValidatingWebhookConfiguration resync
+// default from the environment. VWC_RESYNC_INTERVAL wins; DISCOVERY_INTERVAL is
+// the pre-1.0 name, still honoured so an upgrade does not silently reset the
+// cadence of a deployment that set it.
+func resyncIntervalDefault() (time.Duration, error) {
+	legacy, err := getEnvDuration("DISCOVERY_INTERVAL", config.DefaultVWCResyncInterval)
+	if err != nil {
+		return 0, err
+	}
+	return getEnvDuration("VWC_RESYNC_INTERVAL", legacy)
 }
 
 // mergeSystemControllerSAs returns the built-in default control-plane service

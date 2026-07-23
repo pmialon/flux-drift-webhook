@@ -21,7 +21,6 @@ flux-drift-webhook/
 │   │   ├── webhook_config.go                       # Controller updating ValidatingWebhookConfiguration
 │   │   ├── suite_test.go                           # envtest suite bootstrap (build tag: integration)
 │   │   └── webhook_config_integration_test.go      # envtest integration tests (build tag: integration)
-│   ├── discovery/discovery.go          # GVK discovery via Kubernetes API
 │   ├── metrics/metrics.go              # Prometheus metrics
 │   └── webhook/
 │       ├── handler.go                  # Main admission logic
@@ -176,27 +175,23 @@ When the inventory **cannot be read** (owner missing, empty inventory, cache lag
 
 > **Design note:** treating the inherited Flux **label** as proof of management is the root cause of false positives on derived objects. The non-inheritable proof of management is the Flux SSA `fieldManager` (mirrors Google Config Sync, which keys management off a self-referential `resource-id` annotation rather than an inheritable label).
 
-### Dynamic GVK Discovery
+### Webhook Rules (static, CEL-filtered)
 
-Two ways to shape the VWC rules; `--use-match-conditions` selects between them.
+The VWC carries **one wildcard rule** per webhook entry — `apiGroups`, `apiVersions` and `resources` all `["*"]`, `Scope: "*"` — with the API-group exclusions expressed as CEL `matchConditions` (`request.resource.group != "admissionregistration.k8s.io"`, one condition per entry in `config.ExcludedGroups()`). Every kind the cluster serves is covered, including CRDs installed at any moment.
 
-**Discovery mode (default).** The controller periodically queries `ServerGroupsAndResources()` and updates the `ValidatingWebhookConfiguration` with rules for each discovered GroupVersion. The `admissionregistration.k8s.io` group is excluded to prevent infinite loops. Works on every supported Kubernetes version.
+This replaced periodic `ServerGroupsAndResources()` discovery with a rule per GroupVersion. That approach left a window of up to one refresh interval before a new CRD was covered, and rewrote a rule list that grew with the cluster's API surface on every refresh. The `internal/discovery` package and the `flux_drift_webhook_discovery_errors_total` metric were removed with it; the controller now only re-applies the VWC on `--vwc-resync-interval` to re-assert ownership after an out-of-band edit.
 
-**matchConditions mode (`--use-match-conditions`, Kubernetes ≥ 1.28).** One wildcard rule (`apiGroups/apiVersions/resources: ["*"]`, `Scope: "*"`) replaces the whole discovered list, and the group exclusions move to CEL `matchConditions` (`request.resource.group != "admissionregistration.k8s.io"`, one condition per entry in `config.ExcludedGroups()`). Discovery is skipped entirely — no `ServerGroupsAndResources()` call, no per-refresh rewrite of a rule list that grows with the cluster's API surface, and a CRD installed between two refreshes is covered immediately instead of after up to `--discovery-interval`.
+> **Kubernetes floor: 1.30.** `matchConditions` is GA from 1.30 (alpha and gated off in 1.27, beta in 1.28). On an older server the field is pruned silently, leaving the wildcard rule with no exclusion — the webhook would then receive requests for its own configuration. It would still **allow** them (see the handler guard below), so the degradation is extra traffic rather than breakage, but 1.30 is the supported floor and the chart declares `kubeVersion: ">=1.30.0-0"`.
 
-The API server evaluates `matchConditions` **after** the rules, `namespaceSelector` and `objectSelector`, so the CEL runs only for objects already carrying a Flux ownership label.
+> **The webhook cannot lock itself out.** The handler independently allows any request whose `req.Resource.Group` is in `config.ExcludedGroups()` (`allowed_excluded_group`), so the CEL exclusion is an optimisation, not a safety-critical mechanism. This matters because a VWC deployed *by Flux* carries Flux labels and a Flux `fieldManager`: without the handler guard, a pruned or mis-scoped `matchCondition` would make the webhook deny every write to its own configuration — including the repair.
 
-> **Version gate.** An API server older than 1.28 prunes `matchConditions` silently (alpha and gated off in 1.27, beta in 1.28, GA in 1.30), which would leave the wildcard rule with **no** exclusion. `main` therefore calls `discovery.SupportsMatchConditions()` before enabling the mode and falls back to discovery rules — logging the detected server version — when the version is too old or cannot be read.
+`Scope: "*"` — cluster-scoped Flux-managed objects (Namespaces, CRDs, ClusterRoles, PVs, …) are protected too; with `Namespaced` scope, `kubectl delete namespace` was an unguarded mass-delete primitive. The objectSelector keeps unlabelled cluster-scoped objects out of the webhook. Semantics worth knowing: for a **Namespace** object the request namespace is the namespace's own name (so the namespaced code paths apply, and the VWC `namespaceSelector` matches the namespace's own labels — system namespaces stay exempt); for **other** cluster-scoped kinds the request namespace is empty (always in scope; the `--namespace-label` filter and the namespace-terminating bypass do not apply). The legitimate way to delete a Flux-managed namespace is removing it from Git — Flux prunes it as the owning reconciler.
 
-> **Why this cannot lock the webhook out.** The handler independently allows any request whose `req.Resource.Group` is in `config.ExcludedGroups()` (`allowed_excluded_group`), so the CEL exclusion is an optimisation, not a safety-critical mechanism. It matters because a VWC deployed *by Flux* carries Flux labels and a Flux `fieldManager`: without the handler guard, a mis-scoped or pruned `matchCondition` would make the webhook deny every write to its own configuration — including the repair.
-
-Rules carry **`Scope: "*"`** — cluster-scoped Flux-managed objects (Namespaces, CRDs, ClusterRoles, PVs, …) are protected too; with `Namespaced` scope, `kubectl delete namespace` was an unguarded mass-delete primitive. The objectSelector keeps unlabelled cluster-scoped objects out of the webhook. Semantics worth knowing: for a **Namespace** object the request namespace is the namespace's own name (so the namespaced code paths apply, and the VWC `namespaceSelector` matches the namespace's own labels — system namespaces stay exempt); for **other** cluster-scoped kinds the request namespace is empty (always in scope; the `--namespace-label` filter and the namespace-terminating bypass do not apply). The legitimate way to delete a Flux-managed namespace is removing it from Git — Flux prunes it as the owning reconciler.
-
-The VWC carries **two webhook entries** (`kustomize.<name>` and `helm.<name>`), each with an `objectSelector` requiring the corresponding Flux ownership label (`kustomize.toolkit.fluxcd.io/name` / `helm.toolkit.fluxcd.io/name`, operator `Exists`). Two entries express the OR a single label selector cannot: the API server only forwards requests for objects carrying at least one Flux ownership label, sparing every unrelated write a webhook round-trip. The selector matches the **old or the new** object on UPDATE/DELETE, so stripping the labels in a request cannot dodge interception; the in-handler `allowed_not_managed` gate remains as defence in depth (expect its metric volume to collapse once this pre-filter is live). An object carrying both labels is evaluated by both entries (idempotent decision, double-counted metrics — rare edge).
+The VWC carries **two webhook entries** (`kustomize.<name>` and `helm.<name>`), each with an `objectSelector` requiring the corresponding Flux ownership label (`kustomize.toolkit.fluxcd.io/name` / `helm.toolkit.fluxcd.io/name`, operator `Exists`). Two entries express the OR a single label selector cannot: the API server only forwards requests for objects carrying at least one Flux ownership label, sparing every unrelated write a webhook round-trip. The selector matches the **old or the new** object on UPDATE/DELETE, so stripping the labels in a request cannot dodge interception; the in-handler `allowed_not_managed` gate remains as defence in depth. The API server evaluates `matchConditions` **after** the rules and both selectors, so the CEL runs only for objects already carrying a Flux label. An object carrying both labels is evaluated by both entries (idempotent decision, double-counted metrics — rare edge).
 
 ### Leader Election
 
-Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtime` `leaderelection.Options` via `--enable-leader-election` (with tunable lease/renew/retry durations and release-on-cancel). The `LeaderElectionID` is `flux-drift-webhook-leader`. The deploy overlays pass `--enable-leader-election=true`. All replicas serve admission requests, but only the leader performs GVK discovery and updates the `ValidatingWebhookConfiguration`. This prevents conflicting SSA patches from multiple replicas.
+Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtime` `leaderelection.Options` via `--enable-leader-election` (with tunable lease/renew/retry durations and release-on-cancel). The `LeaderElectionID` is `flux-drift-webhook-leader`. The deploy overlays pass `--enable-leader-election=true`. All replicas serve admission requests, but only the leader updates the `ValidatingWebhookConfiguration`. This prevents conflicting SSA patches from multiple replicas.
 
 ### Manager Bootstrap
 
@@ -224,13 +219,13 @@ Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtim
 | `--log-encoding` | `json` | Log encoding format (`json` or `console`) |
 | `--flux-namespace` | `flux-system` | Namespace where Flux is installed (env: `FLUX_NAMESPACE`) |
 | `--webhook-name` | `flux-drift-webhook.fluxcd.io` | ValidatingWebhookConfiguration name (env: `WEBHOOK_NAME`) |
-| `--discovery-interval` | `5m` | GVK discovery refresh interval (env: `DISCOVERY_INTERVAL`) |
-| `--use-match-conditions` | `false` | Replace the per-GroupVersion rules with one wildcard rule plus CEL `matchConditions` carrying the group exclusions; skips GVK discovery entirely. Requires Kubernetes >= 1.28 — `main` verifies the server version and falls back to discovery mode otherwise (env: `USE_MATCH_CONDITIONS`) |
+| `--vwc-resync-interval` | `5m` | Interval between ValidatingWebhookConfiguration re-applies (env: `VWC_RESYNC_INTERVAL`) |
+| `--discovery-interval` | `5m` | **Deprecated** alias for `--vwc-resync-interval`, kept so existing deployments keep starting (env: `DISCOVERY_INTERVAL`) |
 | `--namespace-label` | *(empty)* | Optional: namespace label key to filter webhook scope |
 | `--namespace-label-value` | *(empty)* | Optional: required label value (needs `--namespace-label`) |
 | `--namespace-fetch-timeout` | `2s` | Timeout for namespace label lookups |
 | `--system-controller-sas` | *(empty)* | Extra control-plane identities (CSV of `namespace:name` SA shorthands or full `system:` usernames) allowed to CREATE Flux-labelled derived resources and DELETE Flux-applied resources (lifecycle); merged with built-in defaults (env: `SYSTEM_CONTROLLER_SAS`) |
-| `--enable-leader-election` | `false` | Enable leader election (only one active manager performs discovery/VWC updates) |
+| `--enable-leader-election` | `false` | Enable leader election (only the leader applies the VWC) |
 | `--leader-election-lease-duration` | `35s` | Interval non-leader candidates wait before force-acquiring leadership |
 | `--leader-election-renew-deadline` | `30s` | Duration the leader retries refreshing leadership before giving up |
 | `--leader-election-retry-period` | `5s` | Duration `LeaderElector` clients wait between action retries |
@@ -250,7 +245,6 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 | `flux_drift_webhook_denials_total` | Counter | `operation`, `kind` | Denied requests only |
 | `flux_drift_webhook_ownership_conflicts_total` | Counter | `kind`, `previous_owner`, `new_owner` | Dual/multiple ownership: Flux owner labels flipped between two reconcilers (owners as `namespace/name`; recorded on each `denied_wrong_flux_controller`) |
 | `flux_drift_webhook_latency_seconds` | Histogram | `operation` | Request processing latency |
-| `flux_drift_webhook_discovery_errors_total` | Counter | — | GVK discovery errors |
 | `flux_drift_webhook_config_updates_total` | Counter | `status` | VWC update attempts |
 
 **Decision label values** for `requests_total`:
@@ -284,6 +278,7 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 ## Prerequisites
 
 - Go 1.26.5
+- Kubernetes 1.30+ (CEL `matchConditions` are GA from 1.30)
 - cert-manager installed in cluster
 - FluxCD installed in `flux-system` namespace
 - Kustomize 5.4+
@@ -311,18 +306,16 @@ For the integration suite, `setup-envtest` provides the envtest assets (`ENVTEST
 | `internal/webhook/ignore_test.go` | `.spec.ignore` parsing (`parseIgnoreRules`), RFC 6901 JSON-pointer conversion (`jsonPointerToPath` escaping/root/error), full target-Selector matching (`ruleMatchesObject` anchored gvk/name/ns regexes, label/annotation selectors, invalid-input errors), `ignoreSetForObject` (target filtering, fail-closed) |
 | `internal/webhook/auth_test.go` | Service account identity parsing (`IsFluxController` 11 edge cases; `IsSystemController` control-plane allow-list incl. configurable entry, non-SA full usernames `system:apiserver`/`system:kube-controller-manager`, and the non-`system:` spoof guard) |
 | `internal/webhook/labels_test.go` | Flux label detection, bypass annotation check |
-| `internal/controller/webhook_config_test.go` | VWC reconciliation, rule building, empty version skipping, `wildcardRules` shape (`*`/`*`/`*` + AllScopes + CUD), `matchConditions` (absent in discovery mode, one condition per excluded group on **both** entries, admission group covered), and `TestReconcile_MatchConditionsSkipsDiscovery` (reconcile succeeds with a discovery client that would fail — proving discovery is not consulted) |
-| `internal/discovery/discovery_test.go` | GVK discovery, excluded groups filtering, `SupportsMatchConditions` version gate (`TestSupportsMatchConditions`: 1.28 boundary, decorated minors `28+`/`27+`, future major, missing `GitVersion`, unparseable/empty version, and `ServerVersion` failure — all fail closed to discovery mode) |
+| `internal/controller/webhook_config_test.go` | VWC reconciliation (single wildcard rule + match conditions on both entries), `ConfigUpdated` event, `wildcardRules` shape (`*`/`*`/`*` + AllScopes + CUD), `matchConditions` (one condition per excluded group on **both** entries, admission group covered) |
 | `internal/metrics/metrics_test.go` | Metrics registration, counter recording |
-| `cmd/webhook/main_test.go` | `getEnv` (`TestGetEnv`), `getEnvDuration` (`TestGetEnvDuration`), `mergeSystemControllerSAs` (`TestMergeSystemControllerSAs`) helpers, and the readiness gate: `TestCachesSyncedCheck` (red before sync, green after `Start`, clean shutdown) and `TestCachesSyncedNeedLeaderElection` (must stay `false`, else non-leader replicas never become Ready) — the bespoke `setupLogger` helper was removed (logging is now `fluxcd/pkg/runtime/logger`) |
+| `cmd/webhook/main_test.go` | `getEnv` (`TestGetEnv`), `getEnvDuration` (`TestGetEnvDuration`), `mergeSystemControllerSAs` (`TestMergeSystemControllerSAs`), `resyncIntervalDefault` (`TestResyncIntervalDefault`: `VWC_RESYNC_INTERVAL` wins over the deprecated `DISCOVERY_INTERVAL` alias, both honoured, both validated) helpers, and the readiness gate: `TestCachesSyncedCheck` (red before sync, green after `Start`, clean shutdown) and `TestCachesSyncedNeedLeaderElection` (must stay `false`, else non-leader replicas never become Ready) — the bespoke `setupLogger` helper was removed (logging is now `fluxcd/pkg/runtime/logger`) |
 
 ### Integration tests (envtest)
 
 A `//go:build integration` suite lives in `internal/controller/{suite_test.go, webhook_config_integration_test.go}` and runs against a real apiserver provided by envtest (`make test-integration`). It uses Gomega (`NewWithT`) and drives `Reconcile` directly with a cacheless client. It asserts:
 
 - real SSA `managedFields` (fieldManager `flux-drift-webhook`)
-- live discovery rules built from the apiserver
-- the `admissionregistration.k8s.io` group is excluded
+- the single wildcard rule survives the apiserver round-trip with `Scope: "*"` intact
 - apiserver defaulting of the VWC
 - the `ConfigUpdated` Event is emitted
 - `ForceOwnership` idempotency (repeated Applies are stable)

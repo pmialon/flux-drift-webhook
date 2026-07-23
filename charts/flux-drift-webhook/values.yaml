@@ -170,7 +170,8 @@ config:
   # binary default), so a flux-system install stays identical to deploy/base.
   fluxNamespace: ""
   webhookName: ""       # VWC name; empty => "flux-drift-webhook.fluxcd.io"
-  discoveryInterval: "" # e.g. "5m"
+  vwcResyncInterval: "" # e.g. "5m"; how often the VWC is re-applied
+  discoveryInterval: "" # DEPRECATED alias for vwcResyncInterval
   namespaceLabel: ""
   namespaceLabelValue: ""
   namespaceFetchTimeout: ""

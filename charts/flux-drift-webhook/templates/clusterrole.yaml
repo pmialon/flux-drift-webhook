@@ -6,7 +6,9 @@ metadata:
   labels:
     {{- include "flux-drift-webhook.labels" . | nindent 4 }}
 rules:
-  # API Discovery
+  # API discovery for the client's RESTMapper (GVK -> resource resolution).
+  # The webhook rules no longer come from discovery, but the controller-runtime
+  # client still needs this to map the types it reads.
   - nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*"]
     verbs: ["get"]
   # ValidatingWebhookConfiguration management

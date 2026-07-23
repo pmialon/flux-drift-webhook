@@ -15,7 +15,7 @@ Inspired by [Google Config Sync's drift prevention](https://cloud.google.com/ant
 
 - **Automatic Protection** — Detects Flux-managed resources via labels and prevents unauthorised modifications
 - **Field-Level Protection** — Uses Server-Side Apply (SSA) `managedFields` to allow controllers like HPA/VPA/KEDA to modify fields they own
-- **Dynamic Discovery** — Automatically discovers all Kubernetes API GroupVersions and updates webhook rules (Scope `*`: cluster-scoped Flux-managed objects — Namespaces, CRDs, ClusterRoles — are protected too; delete a Flux-managed namespace by removing it from Git)
+- **Whole-API Coverage** — A single wildcard rule (`apiGroups`/`apiVersions`/`resources` = `*`, Scope `*`) covers every kind the cluster serves, including CRDs installed later, with the API-group exclusions carried by CEL `matchConditions`. Cluster-scoped Flux-managed objects (Namespaces, CRDs, ClusterRoles) are protected too; delete a Flux-managed namespace by removing it from Git
 - **Audit Mode** — Log-only mode for testing before enforcement; would-be denials are still counted in the metrics, so problems are observable from day one
 - **Ownership Conflict Detection** — Surfaces resources declared by two different Kustomizations/HelmReleases under the same name and namespace — a common source of incidents at GitOps scale, where the two reconcilers silently overwrite each other. Every ownership flip is counted in `flux_drift_webhook_ownership_conflicts_total{kind, previous_owner, new_owner}`, naming both culprits. In audit mode nothing is blocked, so the misconfiguration becomes visible without disrupting either reconciler
 - **Inheritance-Aware** — Ignores derived objects (e.g. `Endpoints`/`EndpointSlice`/`CertificateRequest`) that merely inherit a parent's Flux labels, so control-plane controllers and the garbage collector are never blocked
@@ -89,19 +89,18 @@ graph TB
     J -->|No| ALLOW
     J -->|Yes| DENY
 
-    K[Discovery Controller] -->|Periodic| L[Kubernetes API]
-    L -->|GroupVersions| M[VWC rules: Scope *<br/>2 entries kustomize/helm]
+    K[VWC Controller] -->|Re-apply on a timer| M[VWC: 1 wildcard rule, Scope *<br/>2 entries kustomize/helm<br/>CEL matchConditions exclude<br/>admissionregistration.k8s.io]
 ```
 
 ### Components
 
 - **Webhook Handler** — Processes admission requests and enforces protection rules
-- **Discovery Controller** — Periodically queries Kubernetes API and updates the ValidatingWebhookConfiguration: two webhook entries (`kustomize.`/`helm.` prefixed), each pre-filtering at the API server with an `objectSelector` requiring the corresponding Flux ownership label (`Exists`) — unlabelled objects never round-trip the webhook
+- **VWC Controller** — Owns the ValidatingWebhookConfiguration and re-applies it on a timer: two webhook entries (`kustomize.`/`helm.` prefixed), each carrying one wildcard rule, CEL `matchConditions` for the excluded API groups, and an `objectSelector` requiring the corresponding Flux ownership label (`Exists`) — unlabelled objects never round-trip the webhook
 - **Metrics Exporter** — Exposes Prometheus metrics for observability
 
 ## Prerequisites
 
-- Kubernetes 1.25+
+- Kubernetes 1.30+ (the webhook rules rely on CEL `matchConditions`, GA since 1.30)
 - FluxCD installed in cluster (any version supporting SSA)
 - cert-manager for TLS certificate management
 - Kustomize 5.4+ for deployment
@@ -194,8 +193,8 @@ curl http://localhost:8080/metrics
 | `--log-encoding` | `json` | Log encoding format (`json`, `console`) |
 | `--flux-namespace` | `flux-system` | FluxCD namespace |
 | `--webhook-name` | `flux-drift-webhook.fluxcd.io` | ValidatingWebhookConfiguration name |
-| `--discovery-interval` | `5m` | GVK discovery interval |
-| `--use-match-conditions` | `false` | Replace the per-GroupVersion rules with a single wildcard rule plus CEL `matchConditions` (requires Kubernetes >= 1.28; falls back to discovery on older servers). Env: `USE_MATCH_CONDITIONS` |
+| `--vwc-resync-interval` | `5m` | Interval between ValidatingWebhookConfiguration re-applies (env: `VWC_RESYNC_INTERVAL`) |
+| `--discovery-interval` | `5m` | **Deprecated** alias for `--vwc-resync-interval` |
 | `--namespace-label` | *(empty)* | Optional: namespace label key to filter webhook scope |
 | `--namespace-label-value` | *(empty)* | Optional: required namespace label value (needs `--namespace-label`) |
 | `--namespace-fetch-timeout` | `2s` | Timeout for namespace label lookups |
@@ -210,7 +209,7 @@ curl http://localhost:8080/metrics
 
 The manager is built on [`github.com/fluxcd/pkg/runtime`](https://github.com/fluxcd/pkg/runtime)
 option structs (logger, leader election, pprof, probes, events) with `spf13/pflag`. Leader
-election is opt-in (only the leader performs GVK discovery and updates the VWC); pprof is served
+election is opt-in (only the leader updates the VWC); pprof is served
 on the metrics port; Kubernetes Events are emitted on the VWC controller.
 
 ### Environment Variables
@@ -219,8 +218,7 @@ Override defaults via environment variables:
 
 - `FLUX_NAMESPACE` — Override Flux namespace
 - `WEBHOOK_NAME` — Override ValidatingWebhookConfiguration name
-- `USE_MATCH_CONDITIONS` — Set to `true` to enable wildcard rules + CEL `matchConditions`
-- `DISCOVERY_INTERVAL` — Override discovery interval
+- `VWC_RESYNC_INTERVAL` — Override the ValidatingWebhookConfiguration resync interval (`DISCOVERY_INTERVAL` is the deprecated alias)
 - `SYSTEM_CONTROLLER_SAS` — Extra control-plane SAs (CSV of `namespace:name`) for derived-resource CREATE bypass
 
 ### Bypass Mechanisms
@@ -389,7 +387,6 @@ The webhook exposes metrics on `:8080/metrics`:
 | `flux_drift_webhook_denials_total` | Counter | Total denied requests by operation and kind |
 | `flux_drift_webhook_ownership_conflicts_total` | Counter | Dual/multiple ownership conflicts by kind and the conflicting Flux owners (`previous_owner`/`new_owner`) |
 | `flux_drift_webhook_latency_seconds` | Histogram | Request processing latency |
-| `flux_drift_webhook_discovery_errors_total` | Counter | GVK discovery errors |
 | `flux_drift_webhook_config_updates_total` | Counter | ValidatingWebhookConfiguration updates |
 
 ### Example Prometheus Queries
@@ -425,7 +422,6 @@ flux-drift-webhook/
 ├── internal/
 │   ├── config/              # Configuration constants
 │   ├── controller/          # Webhook config controller
-│   ├── discovery/           # GVK discovery
 │   ├── metrics/             # Prometheus metrics
 │   └── webhook/             # Core webhook logic
 │       ├── handler.go       # Admission handler
@@ -549,15 +545,18 @@ chart published as an OCI artefact, and a GitHub release with checksums.
 <details>
 <summary>ValidatingWebhookConfiguration rules are empty</summary>
 
-**Cause**: Discovery controller may not have run yet or encountered errors.
+**Cause**: the VWC controller has not applied yet, or the apply failed. The rules
+are static (one wildcard rule per entry), so an empty rule list means the apply
+never landed rather than a discovery problem.
 
 **Solution**:
 1. Check webhook logs:
    ```bash
    kubectl logs -n flux-system -l app.kubernetes.io/name=flux-drift-webhook
    ```
-2. Verify RBAC permissions for API discovery
-3. Manually trigger reconciliation by restarting the pod
+2. Check `flux_drift_webhook_config_updates_total{status="error"}`
+3. Verify RBAC permissions on `validatingwebhookconfigurations`
+4. Manually trigger reconciliation by restarting the pod
 </details>
 
 <details>
@@ -596,7 +595,7 @@ kubectl scale deployment flux-drift-webhook -n flux-system --replicas=0
 
 - [x] Core drift prevention logic
 - [x] Field-level protection using SSA
-- [x] Dynamic GVK discovery
+- [x] Whole-API coverage via a wildcard rule + CEL matchConditions
 - [x] Prometheus metrics
 - [x] Audit mode
 - [x] Bypass annotation
