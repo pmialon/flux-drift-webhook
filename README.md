@@ -111,9 +111,9 @@ graph TB
 | Dependency | Version |
 |------------|---------|
 | `sigs.k8s.io/controller-runtime` | `v0.24.1` |
-| `k8s.io/{api,apimachinery,client-go}` | `v0.36.2` |
-| `sigs.k8s.io/structured-merge-diff/v6` | `v6.4.0` |
-| `github.com/fluxcd/pkg/runtime` | `v0.110.1` |
+| `k8s.io/{api,apimachinery,client-go}` | `v0.36.3` |
+| `sigs.k8s.io/structured-merge-diff/v6` | `v6.4.2` |
+| `github.com/fluxcd/pkg/runtime` | `v0.111.0` |
 | `github.com/spf13/pflag` | `v1.0.10` |
 
 ## Quick Start
