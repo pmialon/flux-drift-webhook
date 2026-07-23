@@ -346,6 +346,15 @@ Fixtures are suspended Kustomizations with a hand-written `.status.inventory`. T
 | E6 | `allowed_bypass_annotation` | A bypass annotation applied via Flux lets a manual edit through |
 | E7 | `denied_bypass_annotation_added` | Adding the bypass annotation by hand is **rejected** |
 | E8 | `allowed_drift_ignored_field` | An edit to a path in the owner's `.spec.ignore` is allowed |
+| E9 | `denied_update_flux_managed_fields` | `kubectl set image` on a Flux-managed Deployment is **rejected** |
+| E10 | `allowed_no_field_conflict` | Writing `.spec.replicas`, which Flux never declared, is allowed |
+| E11 | `allowed_subresource` | The same change through the `scale` subresource is allowed |
+| E12 | `allowed_no_field_conflict` | Adding an annotation key Flux never declared is allowed |
+| E13 | `denied_update_flux_managed_fields` | Changing an annotation key Flux **did** declare is **rejected** |
+
+E9–E13 run against **podinfo** (vendored under `e2e/podinfo`, pinned by `PODINFO_VERSION`, labelled by the `e2e/podinfo-flux` overlay). It is the right fixture for free: its Deployment declares no `.spec.replicas` — the shape the README prescribes so an autoscaler can own that field — and it ships an HPA alongside, so the headline field-level case is testable without inventing a workload. E10 is the README's central promise and nothing exercised it end to end before.
+
+E12 and E13 are a deliberate pair: both patch `.spec.template.metadata.annotations`, and only one is refused. Ownership is per key, not per map — too coarse and every sidecar annotation is blocked, too fine and drift on a Flux-declared value slips through.
 
 E3, E4 and E8 are only meaningful with Flux installed: on a cluster without the CRDs the owner cannot be read and every one of them collapses into `denied_create_inventory_unavailable`, which says nothing about the logic being tested.
 
@@ -386,6 +395,7 @@ Two third-party manifests are **committed** under `e2e/` so the suite runs offli
 - `e2e/cert-manager.yaml` (cert-manager, pinned by `CERT_MANAGER_VERSION`)
 - `e2e/podmonitor-crd.yaml` (PodMonitor CRD, pinned by `PROMETHEUS_OPERATOR_VERSION`)
 - `e2e/flux-install.yaml` (Flux, pinned by `FLUX_VERSION`) — without real Kustomization/HelmRelease CRDs the owner-inventory paths can only ever fail closed on an unreadable owner
+- `e2e/podinfo/` (podinfo's kustomize manifests, pinned by `PODINFO_VERSION`) — a realistic Deployment + HPA workload for the field-level tests
 
 `make e2e-vendor` re-downloads both at the versions pinned in the Makefile — only needed when bumping one. They cost ~107 KiB compressed, which buys a `make test-e2e` that works on a fresh clone with no network access to the cluster.
 

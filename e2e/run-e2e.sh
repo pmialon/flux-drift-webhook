@@ -41,6 +41,17 @@ log "Building webhook image..."
 docker build -t "${WEBHOOK_IMAGE}" "${ROOT_DIR}"
 kind load docker-image "${WEBHOOK_IMAGE}" --name "${KIND_CLUSTER_NAME}"
 
+# Side-load podinfo so its pods actually run without the cluster reaching a
+# registry. Non-fatal: the enforce tests act on the Deployment object at
+# admission time and do not need the pods to be up.
+PODINFO_IMAGE="${PODINFO_IMAGE:-ghcr.io/stefanprodan/podinfo:6.14.1}"
+log "Side-loading ${PODINFO_IMAGE}..."
+if docker pull -q "${PODINFO_IMAGE}" >/dev/null 2>&1; then
+    kind load docker-image "${PODINFO_IMAGE}" --name "${KIND_CLUSTER_NAME}"
+else
+    log "WARNING: could not pull ${PODINFO_IMAGE}; its pods will not start, which the tests do not require"
+fi
+
 # Install cert-manager (from a local manifest, so no cluster internet access is needed)
 log "Installing cert-manager..."
 if [[ ! -f "${CERT_MANAGER_MANIFEST}" ]]; then

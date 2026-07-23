@@ -27,6 +27,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_NS="drift-enforce-test"
 WEBHOOK_NS="flux-system"
 OWNER_NAME="e2e-app"
@@ -116,6 +117,33 @@ if [[ -n "${AUDIT_ARG}" ]]; then
     log "ERROR: the webhook is running with --audit-only=true; these tests need enforce mode"
     exit 1
 fi
+
+# The Deployment spec saying "enforce" is not enough. `kubectl rollout status`
+# returns once the new ReplicaSet is available, but pods from the old one can
+# still be terminating and still be in the Service endpoints — and an audit-mode
+# pod allows everything, so a request served by one looks exactly like a webhook
+# that fails to block. Wait until every live pod runs the enforce config.
+log "Waiting for every webhook pod to serve the enforce config..."
+ENFORCING="no"
+for _ in $(seq 1 60); do
+    PODS=$(kubectl get pods -n "${WEBHOOK_NS}" -l app.kubernetes.io/name=flux-drift-webhook \
+        -o jsonpath='{range .items[*]}{.spec.containers[0].args}{"|"}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' 2>/dev/null || true)
+    TOTAL_PODS=$(echo "${PODS}" | grep -c . || true)
+    STALE=$(echo "${PODS}" | grep -c "audit-only=true" || true)
+    NOT_READY=$(echo "${PODS}" | grep -cv "|True$" || true)
+    if [[ "${TOTAL_PODS}" -gt 0 && "${STALE}" -eq 0 && "${NOT_READY}" -eq 0 ]]; then
+        ENFORCING="yes"
+        break
+    fi
+    sleep 2
+done
+if [[ "${ENFORCING}" != "yes" ]]; then
+    log "ERROR: webhook pods did not converge on the enforce config"
+    kubectl get pods -n "${WEBHOOK_NS}" -l app.kubernetes.io/name=flux-drift-webhook
+    exit 1
+fi
+# Endpoint propagation to the API server's webhook client lags pod readiness.
+sleep 5
 
 kubectl delete namespace "${TEST_NS}" --wait=true >/dev/null 2>&1 || true
 kubectl create namespace "${TEST_NS}" >/dev/null
@@ -362,6 +390,73 @@ YAML
 )
 run_kubectl apply -f "${MANIFEST}"
 assert_allowed "E8: an edit to a path the owner ignores is allowed"
+
+# ---------------------------------------------------------------------------
+# podinfo: a real workload rather than a ConfigMap
+#
+# podinfo ships a Deployment with no .spec.replicas plus an HPA, which is
+# exactly the shape the README prescribes for the field-level case: Flux owns
+# .spec.template, an autoscaler owns .spec.replicas. Applied as
+# kustomize-controller via SSA, which is how Flux itself applies.
+# ---------------------------------------------------------------------------
+log ""
+log "--- Deploying podinfo as Flux ---"
+if ! kustomize build "${SCRIPT_DIR}/podinfo-flux" \
+    | kubectl apply --server-side --field-manager=kustomize-controller ${FLUX_SA} -f - \
+      >/dev/null 2>"${TMPDIR_TEST}/podinfo.err"; then
+    log "ERROR: could not deploy podinfo as kustomize-controller"
+    log "    $(cat "${TMPDIR_TEST}/podinfo.err")"
+    exit 1
+fi
+log "podinfo Deployment/Service/HPA applied (fieldManager kustomize-controller)"
+
+# ---------------------------------------------------------------------------
+# E9: the canonical drift — changing the image of a Flux-managed Deployment
+# ---------------------------------------------------------------------------
+log ""
+log "--- E9: kubectl set image on a Flux-managed Deployment (denied_update_flux_managed_fields) ---"
+run_kubectl set image deployment/podinfo -n "${TEST_NS}" podinfod=ghcr.io/stefanprodan/podinfo:6.0.0
+assert_denied "E9: changing a Flux-managed container image is blocked" "Flux-managed fields"
+
+# ---------------------------------------------------------------------------
+# E10: the headline field-level case. Flux never declared .spec.replicas, so it
+# does not own it and an autoscaler may write it. This is the README's central
+# promise and nothing exercised it end to end before.
+# ---------------------------------------------------------------------------
+log ""
+log "--- E10: writing .spec.replicas, which Flux does not own (allowed_no_field_conflict) ---"
+run_kubectl patch deployment podinfo -n "${TEST_NS}" --type=merge -p '{"spec":{"replicas":3}}'
+assert_allowed "E10: an autoscaler-style replicas update is allowed"
+
+# ---------------------------------------------------------------------------
+# E11: the same change through the scale subresource, which the HPA actually
+# uses. Subresources carry no parent object, so they take the earlier
+# allowed_subresource path rather than the field check.
+# ---------------------------------------------------------------------------
+log ""
+log "--- E11: scale subresource, the path a real HPA uses (allowed_subresource) ---"
+run_kubectl scale deployment/podinfo -n "${TEST_NS}" --replicas=2
+assert_allowed "E11: scaling via the scale subresource is allowed"
+
+# ---------------------------------------------------------------------------
+# E12/E13: ownership is per key, not per map. Both patches write into
+# .spec.template.metadata.annotations, and only one is refused — the difference
+# is whether Flux declared that particular key. Getting this wrong in either
+# direction is a real failure mode: too coarse and every sidecar annotation is
+# blocked, too fine and drift on a Flux-declared value slips through.
+# ---------------------------------------------------------------------------
+log ""
+log "--- E12: adding an annotation key Flux never declared (allowed_no_field_conflict) ---"
+run_kubectl patch deployment podinfo -n "${TEST_NS}" --type=merge \
+    -p '{"spec":{"template":{"metadata":{"annotations":{"hand-edited":"true"}}}}}'
+assert_allowed "E12: a new annotation key Flux does not own is allowed"
+
+log ""
+log "--- E13: changing an annotation key Flux DID declare (denied_update_flux_managed_fields) ---"
+# podinfo declares prometheus.io/port: "9797" in .spec.template.metadata.annotations.
+run_kubectl patch deployment podinfo -n "${TEST_NS}" --type=merge \
+    -p '{"spec":{"template":{"metadata":{"annotations":{"prometheus.io/port":"1234"}}}}}'
+assert_denied "E13: changing a Flux-declared annotation is blocked" "Flux-managed fields"
 
 # ---------------------------------------------------------------------------
 # Summary

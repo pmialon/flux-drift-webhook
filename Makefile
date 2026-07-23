@@ -21,6 +21,10 @@ PROMETHEUS_OPERATOR_VERSION ?= v0.92.1
 # Flux itself, so the e2e suite exercises the owner-inventory paths against real
 # Kustomization/HelmRelease CRDs rather than a cluster where they do not exist.
 FLUX_VERSION ?= v2.9.2
+# podinfo, used as a realistic workload in the enforce tests: its Deployment
+# declares no .spec.replicas and it ships an HPA, so the Flux-owns-template /
+# autoscaler-owns-replicas case is testable without inventing a workload.
+PODINFO_VERSION ?= 6.14.1
 
 LOCALBIN ?= $(CURDIR)/bin
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1
@@ -72,7 +76,11 @@ e2e-vendor:
 		"https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/$(PROMETHEUS_OPERATOR_VERSION)/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml"
 	curl -sSLf -o e2e/flux-install.yaml \
 		"https://github.com/fluxcd/flux2/releases/download/$(FLUX_VERSION)/install.yaml"
-	@echo "Vendored cert-manager $(CERT_MANAGER_VERSION), prometheus-operator $(PROMETHEUS_OPERATOR_VERSION), flux $(FLUX_VERSION)"
+	for f in kustomization.yaml deployment.yaml service.yaml hpa.yaml; do \
+		curl -sSLf -o "e2e/podinfo/$$f" \
+			"https://raw.githubusercontent.com/stefanprodan/podinfo/$(PODINFO_VERSION)/kustomize/$$f"; \
+	done
+	@echo "Vendored cert-manager $(CERT_MANAGER_VERSION), prometheus-operator $(PROMETHEUS_OPERATOR_VERSION), flux $(FLUX_VERSION), podinfo $(PODINFO_VERSION)"
 
 test-webhook:
 	./e2e/test-webhook.sh
