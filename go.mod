@@ -1,6 +1,6 @@
 module github.com/pmialon/flux-drift-webhook
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/fluxcd/pkg/runtime v0.110.1
