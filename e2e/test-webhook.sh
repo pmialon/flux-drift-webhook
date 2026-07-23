@@ -23,12 +23,16 @@ TMPDIR_TEST=$(mktemp -d)
 
 # T12 (readiness gate) settings.
 WEBHOOK_CLUSTERROLE="${WEBHOOK_CLUSTERROLE:-flux-drift-webhook}"
-CLUSTERROLE_BACKUP="${TMPDIR_TEST}/clusterrole-backup.yaml"
+# Restoring the revoked verbs, rather than re-applying a whole-object backup:
+# `kubectl apply` of a backup taken before the patch carries a stale
+# resourceVersion and is rejected as a conflict.
+NS_VERBS_BACKUP="${TMPDIR_TEST}/ns-verbs.json"
+NS_RULE_INDEX="${TMPDIR_TEST}/ns-rule-index"
 # Local port for the /readyz port-forward; override if 18081 is taken.
 READYZ_LOCAL_PORT="${READYZ_LOCAL_PORT:-18081}"
-# How long a rollout must fail to complete for the readiness gate to be proven.
+# How long the replacement pod must stay not-Ready for the gate to be proven.
 # Comfortably above a healthy startup (~10s) so the assertion is not a race.
-READY_GATE_WINDOW="${READY_GATE_WINDOW:-60s}"
+READY_GATE_SECONDS="${READY_GATE_SECONDS:-45}"
 
 # Counters
 PASS=0
@@ -173,13 +177,31 @@ first_pod_with_ready() {
         2>/dev/null | awk -v w="${want}" '$2==w {print $1; exit}'
 }
 
+# restore_namespace_verbs puts the revoked verbs back on the ClusterRole.
+restore_namespace_verbs() {
+    kubectl patch clusterrole "${WEBHOOK_CLUSTERROLE}" --type=json \
+        -p "[{\"op\":\"replace\",\"path\":\"/rules/$(cat "${NS_RULE_INDEX}")/verbs\",\"value\":$(cat "${NS_VERBS_BACKUP}")}]"
+}
+
+# webhook_pod_names prints the current webhook pod names, one per line.
+webhook_pod_names() {
+    kubectl get pods -n "${WEBHOOK_NS}" -l app.kubernetes.io/name=flux-drift-webhook \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null
+}
+
+# pod_ready prints True/False/"" for a pod's Ready condition.
+pod_ready() {
+    kubectl get pod -n "${WEBHOOK_NS}" "$1" \
+        -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}' 2>/dev/null
+}
+
 cleanup() {
     kubectl delete namespace "${TEST_NS}" --wait=false >/dev/null 2>&1 || true
     # T12 temporarily revokes the webhook's namespace list/watch. Restore it here
-    # too, so a failure part-way through never leaves the cluster with a crippled
-    # ClusterRole and a Deployment stuck mid-rollout.
-    if [[ -s "${CLUSTERROLE_BACKUP}" ]]; then
-        kubectl apply -f "${CLUSTERROLE_BACKUP}" >/dev/null 2>&1 || true
+    # too, so a failure part-way through never leaves the cluster with crippled
+    # RBAC and pods that can never become Ready.
+    if [[ -s "${NS_VERBS_BACKUP}" && -s "${NS_RULE_INDEX}" ]]; then
+        restore_namespace_verbs >/dev/null 2>&1 || true
     fi
     rm -rf "${TMPDIR_TEST}"
 }
@@ -539,9 +561,16 @@ if assert_success "T10-namespace-delete"; then
         -l app.kubernetes.io/name=flux-drift-webhook \
         -c "${WEBHOOK_CONTAINER}" --tail=-1 \
         --since-time="${START_TIME}" 2>/dev/null || true)
-    if echo "${TEARDOWN_LOGS}" | grep "\"namespace\":\"${TEARDOWN_NS}\"" | grep -q "would deny"; then
+    # Only DELETEs matter here. The fixture's own CREATE is legitimately flagged
+    # (denied_create_inventory_unavailable: the e2e cluster has no Flux, so the
+    # owning Kustomization cannot be read — the same behaviour T4 asserts), and
+    # matching it would fail this test for the wrong reason.
+    TEARDOWN_DELETES=$(echo "${TEARDOWN_LOGS}" \
+        | grep "\"namespace\":\"${TEARDOWN_NS}\"" \
+        | grep "\"operation\":\"DELETE\"" || true)
+    if echo "${TEARDOWN_DELETES}" | grep -q "would deny"; then
         fail "T10: cascade DELETE flagged as drift during namespace teardown"
-        log "    logs: $(echo "${TEARDOWN_LOGS}" | grep "\"namespace\":\"${TEARDOWN_NS}\"" | head -3)"
+        log "    logs: $(echo "${TEARDOWN_DELETES}" | head -3)"
     else
         pass "T10: namespace teardown — no would-deny for cascade deletes"
     fi
@@ -613,45 +642,66 @@ else
             log "    body: ${READYZ_BODY}"
         fi
 
-        # T12b: with the namespace informer unable to list, a new pod must not
-        # become Ready. Back the ClusterRole up first — cleanup() restores it.
-        kubectl get clusterrole "${WEBHOOK_CLUSTERROLE}" -o yaml >"${CLUSTERROLE_BACKUP}" 2>/dev/null || true
-        # `|| true`: with pipefail a non-matching grep would abort the script.
-        # Match `namespaces` loosely — kubectl renders the array as ["namespaces"],
-        # and no other resource this ClusterRole grants contains that substring.
+        # T12b: with the namespace informer unable to list, a replacement pod must
+        # not become Ready. One pod is deleted rather than doing a rollout
+        # restart: each pod requests 2 CPU, so on a single-node cluster a surge
+        # pod just stays Pending — the rollout would stall for lack of capacity
+        # and the assertion would pass without proving anything about readiness.
         NS_RULE_LINE=$(kubectl get clusterrole "${WEBHOOK_CLUSTERROLE}" \
             -o jsonpath='{range .rules[*]}{.resources}{"\n"}{end}' 2>/dev/null \
             | grep -n 'namespaces' | head -1 | cut -d: -f1) || true
 
-        if [[ ! -s "${CLUSTERROLE_BACKUP}" || -z "${NS_RULE_LINE}" ]]; then
+        if [[ -z "${NS_RULE_LINE}" ]]; then
             fail "T12b-setup — could not locate the namespaces rule in ClusterRole/${WEBHOOK_CLUSTERROLE}"
         else
+            NS_RULE_IDX=$((NS_RULE_LINE - 1))
+            echo "${NS_RULE_IDX}" > "${NS_RULE_INDEX}"
+            kubectl get clusterrole "${WEBHOOK_CLUSTERROLE}" \
+                -o jsonpath="{.rules[${NS_RULE_IDX}].verbs}" > "${NS_VERBS_BACKUP}" 2>/dev/null
+
+            BEFORE_PODS=$(webhook_pod_names)
             run_kubectl_cmd patch clusterrole "${WEBHOOK_CLUSTERROLE}" --type=json \
-                -p "[{\"op\":\"replace\",\"path\":\"/rules/$((NS_RULE_LINE - 1))/verbs\",\"value\":[\"get\"]}]"
+                -p "[{\"op\":\"replace\",\"path\":\"/rules/${NS_RULE_IDX}/verbs\",\"value\":[\"get\"]}]"
+
             if assert_success "T12b-revoke-namespace-list-watch"; then
-                run_kubectl_cmd rollout restart "deployment/${WEBHOOK_DEPLOY}" -n "${WEBHOOK_NS}"
-                assert_success "T12b-rollout-restart" || true
+                VICTIM=$(echo "${BEFORE_PODS}" | head -1)
+                run_kubectl_cmd delete pod -n "${WEBHOOK_NS}" "${VICTIM}" --wait=true
+                assert_success "T12b-delete-one-pod" || true
 
-                set +e
-                kubectl rollout status "deployment/${WEBHOOK_DEPLOY}" -n "${WEBHOOK_NS}" \
-                    --timeout="${READY_GATE_WINDOW}" >/dev/null 2>&1
-                ROLLOUT_RC=$?
-                set -e
+                # The replacement is whichever pod was not in the pre-delete set.
+                NEW_POD=""
+                for _ in $(seq 1 30); do
+                    NEW_POD=$(webhook_pod_names | grep -vxF "${BEFORE_PODS}" | head -1) || true
+                    if [[ -n "${NEW_POD}" ]]; then
+                        break
+                    fi
+                    sleep 2
+                done
 
-                if [[ "${ROLLOUT_RC}" -eq 0 ]]; then
-                    fail "T12b: rollout completed with an unsyncable cache — readiness is not gated on cache sync"
+                if [[ -z "${NEW_POD}" ]]; then
+                    fail "T12b — no replacement pod appeared after deleting ${VICTIM}"
                 else
-                    pass "T12b: rollout blocked while the namespace informer cannot sync"
-                fi
+                    log "    replacement pod: ${NEW_POD}"
+                    # It must come up (container running) but never report Ready.
+                    WENT_READY="no"
+                    for _ in $(seq 1 "${READY_GATE_SECONDS}"); do
+                        if [[ "$(pod_ready "${NEW_POD}")" == "True" ]]; then
+                            WENT_READY="yes"
+                            break
+                        fi
+                        sleep 1
+                    done
 
-                # T12c: pinpoint the cause — the TLS listener is up (webhook-server
-                # ok) while cache-sync is red. That pairing is the whole point of
-                # the gate; a generic "not Ready" could have any number of causes.
-                STUCK_POD=$(first_pod_with_ready "False") || true
-                if [[ -z "${STUCK_POD}" ]]; then
-                    fail "T12c — no not-Ready pod found to probe"
-                else
-                    readyz_verbose "${STUCK_POD}"
+                    if [[ "${WENT_READY}" == "yes" ]]; then
+                        fail "T12b: pod became Ready with an unsyncable cache — readiness is not gated on cache sync"
+                    else
+                        pass "T12b: pod stays not-Ready while the namespace informer cannot sync"
+                    fi
+
+                    # T12c: pinpoint the cause — the TLS listener is up
+                    # (webhook-server ok) while cache-sync is red. That pairing is
+                    # the whole point; a bare "not Ready" could have any cause.
+                    readyz_verbose "${NEW_POD}"
                     if echo "${READYZ_BODY}" | grep -qF "[-]cache-sync failed" &&
                         echo "${READYZ_BODY}" | grep -qF "[+]webhook-server ok"; then
                         pass "T12c: /readyz shows webhook-server ok but cache-sync failed"
@@ -662,21 +712,26 @@ else
                 fi
             fi
 
-            # T12d: restoring the RBAC unblocks the rollout. Done promptly so the
-            # blocked managers recover by syncing, rather than being restarted.
-            run_kubectl_cmd apply -f "${CLUSTERROLE_BACKUP}"
-            assert_success "T12d-restore-clusterrole" || true
-            : >"${CLUSTERROLE_BACKUP}"  # cleanup() no longer needs to restore
-
+            # T12d: restoring the RBAC lets the blocked pod finish its sync.
             set +e
-            kubectl rollout status "deployment/${WEBHOOK_DEPLOY}" -n "${WEBHOOK_NS}" \
-                --timeout=180s >/dev/null 2>&1
-            ROLLOUT_RC=$?
+            KUBECTL_STDERR=$(restore_namespace_verbs 2>&1 >/dev/null)
+            KUBECTL_RC=$?
             set -e
-            if [[ "${ROLLOUT_RC}" -eq 0 ]]; then
-                pass "T12d: rollout completes once namespace list/watch is restored"
+            assert_success "T12d-restore-clusterrole" || true
+            : > "${NS_VERBS_BACKUP}"  # cleanup() no longer needs to restore
+
+            RECOVERED="no"
+            for _ in $(seq 1 120); do
+                if [[ "$(pod_ready "${NEW_POD}")" == "True" ]]; then
+                    RECOVERED="yes"
+                    break
+                fi
+                sleep 1
+            done
+            if [[ "${RECOVERED}" == "yes" ]]; then
+                pass "T12d: pod becomes Ready once namespace list/watch is restored"
             else
-                fail "T12d: deployment did not recover after restoring the ClusterRole"
+                fail "T12d: pod ${NEW_POD} did not become Ready after restoring the ClusterRole"
                 kubectl get pods -n "${WEBHOOK_NS}" -l app.kubernetes.io/name=flux-drift-webhook 2>&1 | while read -r line; do
                     log "    ${line}"
                 done

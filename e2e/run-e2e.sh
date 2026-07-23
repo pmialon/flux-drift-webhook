@@ -10,8 +10,12 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-flux-drift-webhook-e2e}"
 WEBHOOK_IMAGE="${WEBHOOK_IMAGE:-flux-drift-webhook:e2e}"
 TIMEOUT="${TIMEOUT:-120s}"
-# cert-manager manifest must be available locally (works offline, no cluster internet needed)
+# Third-party manifests must be available locally (works offline, no cluster
+# internet needed). Both are gitignored — vendor them once before running.
 CERT_MANAGER_MANIFEST="${CERT_MANAGER_MANIFEST:-${SCRIPT_DIR}/cert-manager.yaml}"
+# deploy/base ships a PodMonitor, so the Prometheus Operator CRD must exist or
+# the whole overlay fails to apply.
+PODMONITOR_CRD="${PODMONITOR_CRD:-${SCRIPT_DIR}/podmonitor-crd.yaml}"
 
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
@@ -43,6 +47,18 @@ fi
 kubectl apply -f "${CERT_MANAGER_MANIFEST}"
 kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-manager --timeout="${TIMEOUT}"
 
+# Install the PodMonitor CRD (deploy/base ships a PodMonitor; without the CRD the
+# overlay apply fails with "no matches for kind PodMonitor").
+log "Installing the PodMonitor CRD..."
+if [[ ! -f "${PODMONITOR_CRD}" ]]; then
+    log "ERROR: PodMonitor CRD not found at ${PODMONITOR_CRD}"
+    log "Download it first: curl -Lo e2e/podmonitor-crd.yaml https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.92.1/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml"
+    exit 1
+fi
+# --server-side: the CRD exceeds the annotation size limit of client-side apply.
+kubectl apply --server-side -f "${PODMONITOR_CRD}"
+kubectl wait --for=condition=Established crd/podmonitors.monitoring.coreos.com --timeout="${TIMEOUT}"
+
 # Create flux-system namespace
 log "Creating flux-system namespace..."
 kubectl create namespace flux-system || true
@@ -50,7 +66,12 @@ kubectl create namespace flux-system || true
 # Deploy webhook
 log "Deploying webhook..."
 cd "${ROOT_DIR}"
-kustomize build deploy/overlays/dev | sed "s|flux-drift-webhook:latest|${WEBHOOK_IMAGE}|g" | kubectl apply -f -
+# Rewrite the image line whole: the base manifest carries a registry prefix
+# (ghcr.io/pmialon/...), so substituting only the tag would leave the pod
+# pulling from the registry instead of using the image kind just loaded.
+kustomize build deploy/overlays/dev \
+    | sed -E "s|^([[:space:]]*image: ).*flux-drift-webhook:.*|\1${WEBHOOK_IMAGE}|" \
+    | kubectl apply -f -
 
 # Wait for webhook to be ready
 log "Waiting for webhook to be ready..."

@@ -345,13 +345,22 @@ Run against a live cluster with the webhook in audit-only mode (`make test-webho
 | T9 | `allowed_no_flux_managed_fields` (UPDATE data only) | No audit warning |
 | T10 | `allowed_namespace_terminating` (cascade deletes during ns teardown) | No would-deny in webhook logs |
 | T11 | `denied_delete_flux_managed` (DELETE of a Flux-applied Namespace, Scope `*`) | Audit warning present |
-| T12 | Readiness gated on informer cache sync | T12a `/readyz?verbose` reports `[+]cache-sync ok` in steady state; T12b after revoking `list/watch` on namespaces (keeping `get`) a `rollout restart` must **not** complete within `READY_GATE_WINDOW` (default 60s); T12c the stuck pod reports `[+]webhook-server ok` **and** `[-]cache-sync failed` — the exact gap the gate closes; T12d restoring the ClusterRole unblocks the rollout |
+| T12 | Readiness gated on informer cache sync | T12a `/readyz?verbose` reports `[+]cache-sync ok` in steady state; T12b after revoking `list/watch` on namespaces (keeping `get`), **one pod is deleted** and its replacement must stay not-Ready for `READY_GATE_SECONDS` (default 45); T12c that pod reports `[+]webhook-server ok` **and** `[-]cache-sync failed` — the exact gap the gate closes; T12d restoring the verbs lets it become Ready |
 
-> T12 reads `/readyz?verbose` over a `kubectl port-forward` (the image is distroless — no shell to exec into — and the e2e cluster is assumed to have no internet, so no curl sidecar image). It needs `curl` on the *host* and skips itself with a log if absent. It temporarily patches `ClusterRole/flux-drift-webhook`; the backup is restored both inline and from the `EXIT` trap, so an interrupted run never leaves the cluster with crippled RBAC. Existing replicas keep serving throughout (`minReplicas: 3`, PDB `minAvailable: 1`).
+> T12 reads `/readyz?verbose` over a `kubectl port-forward` (the image is distroless — no shell to exec into — and the e2e cluster is assumed to have no internet, so no curl sidecar image). It needs `curl` on the *host* and skips itself with a log if absent. It temporarily revokes `list/watch` on namespaces; the original verbs are patched back both inline and from the `EXIT` trap, so an interrupted run never leaves the cluster with crippled RBAC.
+>
+> It deletes **one pod** rather than doing a `rollout restart`: each pod requests 2 CPU, so on a single-node kind cluster a surge pod simply stays `Pending`. The rollout would then stall for lack of capacity — the assertion would pass without proving anything about readiness, and the `Pending` pod carries no `Ready` condition at all for T12c to probe.
 
 ### E2E tests (`e2e/run-e2e.sh`)
 
-Full end-to-end: creates a kind cluster, installs cert-manager, deploys the webhook, then runs the integration tests above (`make test-e2e`). Requires a local cert-manager manifest at `e2e/cert-manager.yaml`.
+Full end-to-end: creates a kind cluster, installs cert-manager and the Prometheus Operator `PodMonitor` CRD (`deploy/base` ships a PodMonitor, so the overlay does not apply without it), deploys the webhook, then runs the integration tests above (`make test-e2e`).
+
+Two manifests must be vendored locally first — both are gitignored, and the script prints the download command when one is missing:
+
+- `e2e/cert-manager.yaml`
+- `e2e/podmonitor-crd.yaml`
+
+**Resource requirement:** the dev overlay requests 2 CPU per pod and the HPA sets `minReplicas: 3`, so the kind node needs ~7 CPU free. Below that the pods stay `Pending` and the suite times out waiting for the deployment.
 
 ## CI/CD Pipeline
 
