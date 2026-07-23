@@ -18,10 +18,10 @@ github.com/evanphx/json-patch/v5 v5.9.11 h1:/8HVnzMq13/3x9TPvjG08wUGqBTmZBsCWzjT
 github.com/evanphx/json-patch/v5 v5.9.11/go.mod h1:3j+LviiESTElxA4p3EMKAB9HXj3/XEtnUf6OZxqIQTM=
 github.com/fatih/color v1.16.0 h1:zmkK9Ngbjj+K0yRhTVONQh1p/HknKYSlNT+vZCzyokM=
 github.com/fatih/color v1.16.0/go.mod h1:fL2Sau1YI5c0pdGEVCbKQbLXB6edEj1ZgiY4NijnWvE=
-github.com/fluxcd/pkg/apis/event v0.27.1 h1:bFnP6gcZzCVm/Dxf/ByFz6BW+FzSn4RoWUkf7ri2bOs=
-github.com/fluxcd/pkg/apis/event v0.27.1/go.mod h1:ThqUZxG48o5PDN9Qh0tVTdpb+6PlVa6J2beEeMZoKMk=
-github.com/fluxcd/pkg/runtime v0.110.1 h1:O7eVI/R40MQMQpi6cAlWsNka2hZ0YfMXzETmui9D06c=
-github.com/fluxcd/pkg/runtime v0.110.1/go.mod h1:h5HDYgi4RXHGZD/5TCdy/47Vdlplf3/KM6U8aEDcagA=
+github.com/fluxcd/pkg/apis/event v0.28.0 h1:08XVnuhPff/UowZ7hsxOnEoBGC/+F6r2kcvTtqpbWQc=
+github.com/fluxcd/pkg/apis/event v0.28.0/go.mod h1:ThqUZxG48o5PDN9Qh0tVTdpb+6PlVa6J2beEeMZoKMk=
+github.com/fluxcd/pkg/runtime v0.111.0 h1:nbmFuYstyN2a1SDW0SZU5dG9+9x+yDP4A39kKQKjj2A=
+github.com/fluxcd/pkg/runtime v0.111.0/go.mod h1:YUljTAXVaeWG+GLnXNZopFFMZstUoTxJs7+vl91OV58=
 github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=
 github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/fxamacker/cbor/v2 v2.9.0 h1:NpKPmjDBgUfBms6tr6JZkTHtfFGcMKsw3eGcmD/sapM=
