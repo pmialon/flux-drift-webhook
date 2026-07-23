@@ -73,8 +73,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           mkdir -p output
+          # The image tag has no "v": docker/metadata-action pushes
+          # {{version}}, which strips it. Using GITHUB_REF_NAME here pinned the
+          # released manifest to a tag that does not exist.
+          image_tag="${GITHUB_REF_NAME#v}"
           ( cd deploy/base && \
-            kustomize edit set image "ghcr.io/pmialon/flux-drift-webhook=ghcr.io/${{ github.repository_owner }}/flux-drift-webhook:${GITHUB_REF_NAME}" )
+            kustomize edit set image "ghcr.io/pmialon/flux-drift-webhook=ghcr.io/${{ github.repository_owner }}/flux-drift-webhook:${image_tag}" )
           kustomize build deploy/base > output/flux-drift-webhook.deployment.yaml
           # `kustomize edit` rewrites the file in place. GoReleaser aborts on a dirty
           # worktree, so restore it once the manifest is rendered.
