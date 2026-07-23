@@ -339,6 +339,9 @@ Run against a live cluster with the webhook in audit-only mode (`make test-webho
 | T9 | `allowed_no_flux_managed_fields` (UPDATE data only) | No audit warning |
 | T10 | `allowed_namespace_terminating` (cascade deletes during ns teardown) | No would-deny in webhook logs |
 | T11 | `denied_delete_flux_managed` (DELETE of a Flux-applied Namespace, Scope `*`) | Audit warning present |
+| T12 | Readiness gated on informer cache sync | T12a `/readyz?verbose` reports `[+]cache-sync ok` in steady state; T12b after revoking `list/watch` on namespaces (keeping `get`) a `rollout restart` must **not** complete within `READY_GATE_WINDOW` (default 60s); T12c the stuck pod reports `[+]webhook-server ok` **and** `[-]cache-sync failed` — the exact gap the gate closes; T12d restoring the ClusterRole unblocks the rollout |
+
+> T12 reads `/readyz?verbose` over a `kubectl port-forward` (the image is distroless — no shell to exec into — and the e2e cluster is assumed to have no internet, so no curl sidecar image). It needs `curl` on the *host* and skips itself with a log if absent. It temporarily patches `ClusterRole/flux-drift-webhook`; the backup is restored both inline and from the `EXIT` trap, so an interrupted run never leaves the cluster with crippled RBAC. Existing replicas keep serving throughout (`minReplicas: 3`, PDB `minAvailable: 1`).
 
 ### E2E tests (`e2e/run-e2e.sh`)
 
