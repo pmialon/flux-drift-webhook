@@ -74,6 +74,7 @@ func main() {
 		namespaceLabelValue   string
 		namespaceFetchTimeout time.Duration
 		systemControllerSAs   string
+		useMatchConditions    bool
 		kubeAPIQPS            float32
 		kubeAPIBurst          int
 
@@ -104,6 +105,9 @@ func main() {
 		"Extra control-plane identities (CSV of namespace:name SA shorthands or full system: usernames) "+
 			"allowed to create Flux-labelled derived resources and delete Flux-applied resources; "+
 			"merged with built-in defaults")
+	flag.BoolVar(&useMatchConditions, "use-match-conditions", getEnv("USE_MATCH_CONDITIONS", "") == "true",
+		"Replace the per-GroupVersion webhook rules with a single wildcard rule plus CEL matchConditions "+
+			"(requires Kubernetes >= 1.28; falls back to discovery on older servers)")
 	flag.Float32Var(&kubeAPIQPS, "kube-api-qps", 50.0, "The maximum queries-per-second of requests sent to the Kubernetes API.")
 	flag.IntVar(&kubeAPIBurst, "kube-api-burst", 300, "The maximum burst queries-per-second of requests sent to the Kubernetes API.")
 
@@ -167,6 +171,24 @@ func main() {
 
 	disc := discovery.NewDiscoverer(discoveryClientInstance, log)
 
+	// An API server older than 1.28 prunes matchConditions silently, which would
+	// leave the wildcard rule with no group exclusion at all. Verify before
+	// enabling, and fall back to per-GroupVersion discovery rules otherwise.
+	if useMatchConditions {
+		supported, serverVersion, verErr := disc.SupportsMatchConditions()
+		switch {
+		case verErr != nil:
+			log.Error(verErr, "cannot determine API server version; falling back to per-GroupVersion discovery rules")
+			useMatchConditions = false
+		case !supported:
+			log.Info("API server does not support webhook matchConditions; falling back to per-GroupVersion discovery rules",
+				"serverVersion", serverVersion, "required", ">= 1.28")
+			useMatchConditions = false
+		default:
+			log.Info("using wildcard webhook rules with CEL matchConditions", "serverVersion", serverVersion)
+		}
+	}
+
 	handler := &webhookhandler.DriftPreventionHandler{
 		Log:                   log.WithName("webhook"),
 		FluxNamespace:         fluxNamespace,
@@ -191,15 +213,16 @@ func main() {
 	}
 
 	if err := (&controller.WebhookConfigReconciler{
-		Client:            mgr.GetClient(),
-		Discoverer:        disc,
-		Metrics:           m,
-		EventRecorder:     eventRecorder,
-		WebhookName:       webhookName,
-		WebhookNamespace:  fluxNamespace,
-		WebhookService:    "flux-drift-webhook",
-		WebhookPath:       config.WebhookPath,
-		DiscoveryInterval: discoveryInterval,
+		Client:             mgr.GetClient(),
+		Discoverer:         disc,
+		Metrics:            m,
+		EventRecorder:      eventRecorder,
+		WebhookName:        webhookName,
+		WebhookNamespace:   fluxNamespace,
+		WebhookService:     "flux-drift-webhook",
+		WebhookPath:        config.WebhookPath,
+		DiscoveryInterval:  discoveryInterval,
+		UseMatchConditions: useMatchConditions,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to setup webhook config controller")
 		os.Exit(1)

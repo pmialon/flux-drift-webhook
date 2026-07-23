@@ -84,6 +84,17 @@ func (h *DriftPreventionHandler) Handle(ctx context.Context, req admission.Reque
 		return admission.Allowed("subresource not subject to drift prevention")
 	}
 
+	// Never guard the admission API itself. The VWC rules already exclude that
+	// group, so this changes no behaviour today — it exists so a
+	// mis-scoped VWC can never lock the webhook out of its own configuration.
+	// Denying a write to a Flux-applied ValidatingWebhookConfiguration would be
+	// unrecoverable: repairing it means updating the very object the webhook is
+	// now refusing to let anyone update.
+	if slices.Contains(config.ExcludedGroups(), req.Resource.Group) {
+		h.Metrics.RecordRequest(string(req.Operation), "allowed_excluded_group")
+		return admission.Allowed("API group excluded from drift prevention")
+	}
+
 	timer := h.Metrics.StartTimer(string(req.Operation))
 	defer timer.ObserveDuration()
 

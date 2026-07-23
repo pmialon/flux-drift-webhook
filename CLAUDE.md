@@ -178,7 +178,17 @@ When the inventory **cannot be read** (owner missing, empty inventory, cache lag
 
 ### Dynamic GVK Discovery
 
-The controller periodically queries `ServerGroupsAndResources()` and updates the `ValidatingWebhookConfiguration` with rules for each discovered GroupVersion. The `admissionregistration.k8s.io` group is excluded to prevent infinite loops.
+Two ways to shape the VWC rules; `--use-match-conditions` selects between them.
+
+**Discovery mode (default).** The controller periodically queries `ServerGroupsAndResources()` and updates the `ValidatingWebhookConfiguration` with rules for each discovered GroupVersion. The `admissionregistration.k8s.io` group is excluded to prevent infinite loops. Works on every supported Kubernetes version.
+
+**matchConditions mode (`--use-match-conditions`, Kubernetes ≥ 1.28).** One wildcard rule (`apiGroups/apiVersions/resources: ["*"]`, `Scope: "*"`) replaces the whole discovered list, and the group exclusions move to CEL `matchConditions` (`request.resource.group != "admissionregistration.k8s.io"`, one condition per entry in `config.ExcludedGroups()`). Discovery is skipped entirely — no `ServerGroupsAndResources()` call, no per-refresh rewrite of a rule list that grows with the cluster's API surface, and a CRD installed between two refreshes is covered immediately instead of after up to `--discovery-interval`.
+
+The API server evaluates `matchConditions` **after** the rules, `namespaceSelector` and `objectSelector`, so the CEL runs only for objects already carrying a Flux ownership label.
+
+> **Version gate.** An API server older than 1.28 prunes `matchConditions` silently (alpha and gated off in 1.27, beta in 1.28, GA in 1.30), which would leave the wildcard rule with **no** exclusion. `main` therefore calls `discovery.SupportsMatchConditions()` before enabling the mode and falls back to discovery rules — logging the detected server version — when the version is too old or cannot be read.
+
+> **Why this cannot lock the webhook out.** The handler independently allows any request whose `req.Resource.Group` is in `config.ExcludedGroups()` (`allowed_excluded_group`), so the CEL exclusion is an optimisation, not a safety-critical mechanism. It matters because a VWC deployed *by Flux* carries Flux labels and a Flux `fieldManager`: without the handler guard, a mis-scoped or pruned `matchCondition` would make the webhook deny every write to its own configuration — including the repair.
 
 Rules carry **`Scope: "*"`** — cluster-scoped Flux-managed objects (Namespaces, CRDs, ClusterRoles, PVs, …) are protected too; with `Namespaced` scope, `kubectl delete namespace` was an unguarded mass-delete primitive. The objectSelector keeps unlabelled cluster-scoped objects out of the webhook. Semantics worth knowing: for a **Namespace** object the request namespace is the namespace's own name (so the namespaced code paths apply, and the VWC `namespaceSelector` matches the namespace's own labels — system namespaces stay exempt); for **other** cluster-scoped kinds the request namespace is empty (always in scope; the `--namespace-label` filter and the namespace-terminating bypass do not apply). The legitimate way to delete a Flux-managed namespace is removing it from Git — Flux prunes it as the owning reconciler.
 
@@ -215,6 +225,7 @@ Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtim
 | `--flux-namespace` | `flux-system` | Namespace where Flux is installed (env: `FLUX_NAMESPACE`) |
 | `--webhook-name` | `flux-drift-webhook.fluxcd.io` | ValidatingWebhookConfiguration name (env: `WEBHOOK_NAME`) |
 | `--discovery-interval` | `5m` | GVK discovery refresh interval (env: `DISCOVERY_INTERVAL`) |
+| `--use-match-conditions` | `false` | Replace the per-GroupVersion rules with one wildcard rule plus CEL `matchConditions` carrying the group exclusions; skips GVK discovery entirely. Requires Kubernetes >= 1.28 — `main` verifies the server version and falls back to discovery mode otherwise (env: `USE_MATCH_CONDITIONS`) |
 | `--namespace-label` | *(empty)* | Optional: namespace label key to filter webhook scope |
 | `--namespace-label-value` | *(empty)* | Optional: required label value (needs `--namespace-label`) |
 | `--namespace-fetch-timeout` | `2s` | Timeout for namespace label lookups |
@@ -257,6 +268,7 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 - `allowed_system_controller` — CREATE by a recognised control-plane controller (e.g. endpoint/endpointslice controllers), or DELETE of a Flux-applied resource by one (GC cascade, Job TTL/CronJob cleanup)
 - `allowed_not_in_owner_inventory` — CREATE of an object whose id is absent from the owning Kustomization/HelmRelease `.status.inventory` (Flux labels inherited from a parent, e.g. an operator-derived resource)
 - `allowed_subresource` — request for a sub-resource (status/scale/…); not subject to drift prevention
+- `allowed_excluded_group` — request targets an API group in `config.ExcludedGroups()` (`admissionregistration.k8s.io`); never guarded, so the webhook cannot lock itself out of its own configuration
 - `denied_parse_error` — failed to parse objects for field check (fail-closed)
 - `denied_managed_fields_error` — failed to extract managed fields (fail-closed)
 - `denied_managed_fields_tampered` — UPDATE releasing Flux field ownership without a value change (managedFields wipe / SSA manager-name spoof)
@@ -294,13 +306,13 @@ For the integration suite, `setup-envtest` provides the envtest assets (`ENVTEST
 
 | File | Coverage |
 |------|----------|
-| `internal/webhook/handler_test.go` | All decision paths: not-managed, Flux controller (own + wrong), bypass annotation (valid + single-step attack + never on CREATE + introduction denied), `reconcile: disabled` (UPDATE/DELETE allow, Helm not honoured, introduction denied), deletion in progress, namespace-teardown cascade (terminating allow, active deny, fail-closed helper), CREATE (inventory veto incl. forged ownerReference and system-controller, not-in-inventory allow, empty/unreadable inventory fail-closed with distinct reason, RBAC colon ids, owned-resource/system-controller heuristics), DELETE deny (genuinely Flux-applied) + cluster-scoped (ClusterRole, Namespace), UPDATE protection with realistic apiserver-shaped fieldsV1 (container-image drift denied, HPA replicas allowed, label-strip denied, managedFields wipe denied), audit-only mode, fail-closed error paths, HelmRelease label paths, sub-resource allow, non-SA `system:apiserver` DELETE allow, `CachedObjectTypes` pre-warm list (`TestCachedObjectTypes`, pinned to what the handler reads through the cache), UPDATE `.spec.ignore` waiver (exact-path/label-selector/list-path waived; target mismatch/array-index-path/owner-unreadable/Helm-owner denied; ignore cannot disarm ownership of other fields) |
+| `internal/webhook/handler_test.go` | All decision paths: not-managed, Flux controller (own + wrong), bypass annotation (valid + single-step attack + never on CREATE + introduction denied), `reconcile: disabled` (UPDATE/DELETE allow, Helm not honoured, introduction denied), deletion in progress, namespace-teardown cascade (terminating allow, active deny, fail-closed helper), CREATE (inventory veto incl. forged ownerReference and system-controller, not-in-inventory allow, empty/unreadable inventory fail-closed with distinct reason, RBAC colon ids, owned-resource/system-controller heuristics), DELETE deny (genuinely Flux-applied) + cluster-scoped (ClusterRole, Namespace), UPDATE protection with realistic apiserver-shaped fieldsV1 (container-image drift denied, HPA replicas allowed, label-strip denied, managedFields wipe denied), audit-only mode, fail-closed error paths, HelmRelease label paths, sub-resource allow, excluded-group allow on CREATE/UPDATE/DELETE plus the counterpart proving other groups stay guarded, non-SA `system:apiserver` DELETE allow, `CachedObjectTypes` pre-warm list (`TestCachedObjectTypes`, pinned to what the handler reads through the cache), UPDATE `.spec.ignore` waiver (exact-path/label-selector/list-path waived; target mismatch/array-index-path/owner-unreadable/Helm-owner denied; ignore cannot disarm ownership of other fields) |
 | `internal/webhook/fields_test.go` | SSA managedFields extraction, value-based field diff, hierarchy-aware conflict detection (keyed-list ancestor/descendant overlap, disjoint and sibling non-conflicts), concurrent kustomize + helm managers (union of fields), `WaiveIgnoredConflicts` set algebra (exact/descendant waived, ancestor not waived, nil operands) |
 | `internal/webhook/ignore_test.go` | `.spec.ignore` parsing (`parseIgnoreRules`), RFC 6901 JSON-pointer conversion (`jsonPointerToPath` escaping/root/error), full target-Selector matching (`ruleMatchesObject` anchored gvk/name/ns regexes, label/annotation selectors, invalid-input errors), `ignoreSetForObject` (target filtering, fail-closed) |
 | `internal/webhook/auth_test.go` | Service account identity parsing (`IsFluxController` 11 edge cases; `IsSystemController` control-plane allow-list incl. configurable entry, non-SA full usernames `system:apiserver`/`system:kube-controller-manager`, and the non-`system:` spoof guard) |
 | `internal/webhook/labels_test.go` | Flux label detection, bypass annotation check |
-| `internal/controller/webhook_config_test.go` | VWC reconciliation, rule building, empty version skipping |
-| `internal/discovery/discovery_test.go` | GVK discovery, excluded groups filtering |
+| `internal/controller/webhook_config_test.go` | VWC reconciliation, rule building, empty version skipping, `wildcardRules` shape (`*`/`*`/`*` + AllScopes + CUD), `matchConditions` (absent in discovery mode, one condition per excluded group on **both** entries, admission group covered), and `TestReconcile_MatchConditionsSkipsDiscovery` (reconcile succeeds with a discovery client that would fail — proving discovery is not consulted) |
+| `internal/discovery/discovery_test.go` | GVK discovery, excluded groups filtering, `SupportsMatchConditions` version gate (`TestSupportsMatchConditions`: 1.28 boundary, decorated minors `28+`/`27+`, future major, missing `GitVersion`, unparseable/empty version, and `ServerVersion` failure — all fail closed to discovery mode) |
 | `internal/metrics/metrics_test.go` | Metrics registration, counter recording |
 | `cmd/webhook/main_test.go` | `getEnv` (`TestGetEnv`), `getEnvDuration` (`TestGetEnvDuration`), `mergeSystemControllerSAs` (`TestMergeSystemControllerSAs`) helpers, and the readiness gate: `TestCachesSyncedCheck` (red before sync, green after `Start`, clean shutdown) and `TestCachesSyncedNeedLeaderElection` (must stay `false`, else non-leader replicas never become Ready) — the bespoke `setupLogger` helper was removed (logging is now `fluxcd/pkg/runtime/logger`) |
 
@@ -314,6 +326,7 @@ A `//go:build integration` suite lives in `internal/controller/{suite_test.go, w
 - apiserver defaulting of the VWC
 - the `ConfigUpdated` Event is emitted
 - `ForceOwnership` idempotency (repeated Applies are stable)
+- CEL `matchConditions` **compile and are accepted by the apiserver** — the only place this is checked, since the apiserver compiles the expressions on write and the unit tests run against a fake client that stores any string; plus their idempotency across repeated Applies
 
 > **Note:** `setup-envtest` fetches the kube-apiserver/etcd binary assets from an external GitHub index (not GOPROXY); GitHub-hosted runners have the network access to fetch them, so the CI job is a **required automatic gate**. Fallbacks in restricted networks: pre-seed the assets (`ENVTEST_INSTALLED_ONLY=1`) or point `--index` at a mirror.
 

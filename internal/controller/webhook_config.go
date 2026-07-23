@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -60,6 +61,12 @@ type WebhookConfigReconciler struct {
 	WebhookPath string
 	// DiscoveryInterval is the requeue interval between discovery refreshes.
 	DiscoveryInterval time.Duration
+	// UseMatchConditions replaces the per-GroupVersion rules with a single
+	// wildcard rule, letting CEL matchConditions carry the group exclusions.
+	// Requires a Kubernetes API server that honours matchConditions (>= 1.28);
+	// main verifies that before setting this, because an older server prunes
+	// the field silently. See buildRules for the trade-offs.
+	UseMatchConditions bool
 }
 
 // Reconcile rebuilds the ValidatingWebhookConfiguration rules from the
@@ -77,15 +84,21 @@ func (r *WebhookConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request)
 		ObjectMeta: metav1.ObjectMeta{Name: r.WebhookName},
 	}
 
-	groupVersions, err := r.Discoverer.DiscoverGroupVersions(ctx)
-	if err != nil {
-		r.Metrics.RecordDiscoveryError()
-		r.event(ref, corev1.EventTypeWarning, "DiscoveryFailed", "GVK discovery failed: %v", err)
-		log.Error(err, "failed to discover GroupVersions")
-		return ctrl.Result{RequeueAfter: time.Minute}, err
+	// In matchConditions mode a single wildcard rule covers every group, so
+	// there is nothing to discover — the API server itself does the filtering.
+	var rules []admissionregistrationv1.RuleWithOperations
+	if r.UseMatchConditions {
+		rules = wildcardRules()
+	} else {
+		groupVersions, err := r.Discoverer.DiscoverGroupVersions(ctx)
+		if err != nil {
+			r.Metrics.RecordDiscoveryError()
+			r.event(ref, corev1.EventTypeWarning, "DiscoveryFailed", "GVK discovery failed: %v", err)
+			log.Error(err, "failed to discover GroupVersions")
+			return ctrl.Result{RequeueAfter: time.Minute}, err
+		}
+		rules = r.buildRules(groupVersions)
 	}
-
-	rules := r.buildRules(groupVersions)
 
 	// SSA merges by webhook entry name, so they must match the deployed manifest
 	vwc := &admissionregistrationv1.ValidatingWebhookConfiguration{
@@ -155,7 +168,57 @@ func (r *WebhookConfigReconciler) buildWebhookEntry(
 		},
 		SideEffects:             &sideEffects,
 		AdmissionReviewVersions: []string{"v1"},
+		MatchConditions:         r.matchConditions(),
 	}
+}
+
+// matchConditions returns the CEL pre-filters that replace the per-GroupVersion
+// rule list, or nil in discovery mode. One condition per excluded group, so
+// adding a group to config.ExcludedGroups covers both modes.
+//
+// The API server evaluates matchConditions after the rules, namespaceSelector
+// and objectSelector, so these only run for objects already carrying a Flux
+// ownership label — the cost is negligible and the exclusion is exact.
+func (r *WebhookConfigReconciler) matchConditions() []admissionregistrationv1.MatchCondition {
+	if !r.UseMatchConditions {
+		return nil
+	}
+	excluded := config.ExcludedGroups()
+	conditions := make([]admissionregistrationv1.MatchCondition, 0, len(excluded))
+	for _, group := range excluded {
+		conditions = append(conditions, admissionregistrationv1.MatchCondition{
+			Name:       "exclude-" + group,
+			Expression: fmt.Sprintf("request.resource.group != %q", group),
+		})
+	}
+	return conditions
+}
+
+// wildcardRules returns the single rule used in matchConditions mode: every
+// group, version and resource, at every scope.
+//
+// Two things improve over the discovered rule list. A CRD installed between two
+// discovery refreshes is covered immediately rather than after up to
+// DiscoveryInterval, and the ValidatingWebhookConfiguration stops being
+// rewritten with one rule per GroupVersion on every refresh.
+//
+// The group exclusions move from the rule list to the CEL matchConditions; the
+// handler also refuses to act on those groups, so a pruned or mis-scoped
+// matchCondition cannot lock the webhook out of its own configuration.
+func wildcardRules() []admissionregistrationv1.RuleWithOperations {
+	return []admissionregistrationv1.RuleWithOperations{{
+		Rule: admissionregistrationv1.Rule{
+			APIGroups:   []string{"*"},
+			APIVersions: []string{"*"},
+			Resources:   []string{"*"},
+			Scope:       ptr(admissionregistrationv1.AllScopes),
+		},
+		Operations: []admissionregistrationv1.OperationType{
+			admissionregistrationv1.Create,
+			admissionregistrationv1.Update,
+			admissionregistrationv1.Delete,
+		},
+	}}
 }
 
 // event emits a Kubernetes Event for obj when an EventRecorder is configured.

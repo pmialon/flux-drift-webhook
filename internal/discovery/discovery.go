@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,6 +43,56 @@ func NewDiscoverer(client discovery.DiscoveryInterface, log logr.Logger) *Discov
 		client: client,
 		log:    log.WithName("discovery"),
 	}
+}
+
+// minMatchConditionsMinor is the first Kubernetes minor version where webhook
+// matchConditions are beta and on by default (1.28); they are alpha and gated
+// off in 1.27, and GA from 1.30. On an older server the field is silently
+// pruned from the ValidatingWebhookConfiguration, which would leave wildcard
+// rules with no exclusion at all — hence the check before enabling them.
+const minMatchConditionsMinor = 28
+
+// SupportsMatchConditions reports whether the API server is recent enough to
+// honour ValidatingWebhook matchConditions. It returns the reported version so
+// callers can log what they saw when falling back.
+func (d *Discoverer) SupportsMatchConditions() (bool, string, error) {
+	info, err := d.client.ServerVersion()
+	if err != nil {
+		return false, "", fmt.Errorf("querying server version: %w", err)
+	}
+
+	reported := info.GitVersion
+	if reported == "" {
+		reported = info.Major + "." + info.Minor
+	}
+
+	major, err := leadingInt(info.Major)
+	if err != nil {
+		return false, reported, fmt.Errorf("parsing server major version %q: %w", info.Major, err)
+	}
+	// Distributions decorate the minor version ("28+", "30-gke.5"), so only the
+	// leading digits are meaningful.
+	minor, err := leadingInt(info.Minor)
+	if err != nil {
+		return false, reported, fmt.Errorf("parsing server minor version %q: %w", info.Minor, err)
+	}
+
+	if major > 1 {
+		return true, reported, nil
+	}
+	return major == 1 && minor >= minMatchConditionsMinor, reported, nil
+}
+
+// leadingInt parses the leading run of digits in s, ignoring any suffix.
+func leadingInt(s string) (int, error) {
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0, fmt.Errorf("no leading digits in %q", s)
+	}
+	return strconv.Atoi(s[:end])
 }
 
 // DiscoverGroupVersions returns the distinct, non-excluded API GroupVersions

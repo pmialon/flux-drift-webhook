@@ -195,6 +195,7 @@ curl http://localhost:8080/metrics
 | `--flux-namespace` | `flux-system` | FluxCD namespace |
 | `--webhook-name` | `flux-drift-webhook.fluxcd.io` | ValidatingWebhookConfiguration name |
 | `--discovery-interval` | `5m` | GVK discovery interval |
+| `--use-match-conditions` | `false` | Replace the per-GroupVersion rules with a single wildcard rule plus CEL `matchConditions` (requires Kubernetes >= 1.28; falls back to discovery on older servers). Env: `USE_MATCH_CONDITIONS` |
 | `--namespace-label` | *(empty)* | Optional: namespace label key to filter webhook scope |
 | `--namespace-label-value` | *(empty)* | Optional: required namespace label value (needs `--namespace-label`) |
 | `--namespace-fetch-timeout` | `2s` | Timeout for namespace label lookups |
@@ -218,6 +219,7 @@ Override defaults via environment variables:
 
 - `FLUX_NAMESPACE` — Override Flux namespace
 - `WEBHOOK_NAME` — Override ValidatingWebhookConfiguration name
+- `USE_MATCH_CONDITIONS` — Set to `true` to enable wildcard rules + CEL `matchConditions`
 - `DISCOVERY_INTERVAL` — Override discovery interval
 - `SYSTEM_CONTROLLER_SAS` — Extra control-plane SAs (CSV of `namespace:name`) for derived-resource CREATE bypass
 
@@ -366,6 +368,14 @@ metadata:
 Requests for a sub-resource (`status`, `scale`, …) are allowed
 (`allowed_subresource`) — they do not carry the parent object needed for drift
 evaluation.
+
+#### 6. Excluded API groups
+
+Requests targeting `admissionregistration.k8s.io` are always allowed
+(`allowed_excluded_group`). The webhook must never guard its own configuration:
+a `ValidatingWebhookConfiguration` deployed *by Flux* carries Flux labels and a
+Flux `fieldManager`, so guarding it would deny every write to it — including the
+one needed to repair it.
 
 ## Monitoring
 

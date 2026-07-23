@@ -64,6 +64,15 @@ func newReconciler(t *testing.T, rec record.EventRecorder) *WebhookConfigReconci
 	}
 }
 
+// newMatchConditionsReconciler is newReconciler with wildcard rules and CEL
+// matchConditions enabled.
+func newMatchConditionsReconciler(t *testing.T) *WebhookConfigReconciler {
+	t.Helper()
+	r := newReconciler(t, nil)
+	r.UseMatchConditions = true
+	return r
+}
+
 // seedVWC pre-creates the empty ValidatingWebhookConfiguration the reconciler
 // applies into, and registers its deletion as test cleanup.
 func seedVWC(t *testing.T, g *WithT) {
@@ -182,4 +191,70 @@ func hasApplyManager(fields []metav1.ManagedFieldsEntry, manager string) bool {
 		}
 	}
 	return false
+}
+
+// TestIntegration_Reconcile_MatchConditionsAccepted is the only place the CEL
+// expressions are actually validated. The apiserver compiles matchConditions
+// when the ValidatingWebhookConfiguration is written and rejects malformed ones,
+// so a typo or a wrong variable name (request.resource vs request.kind, ...)
+// fails here and nowhere else — the unit tests run against a fake client that
+// stores whatever string it is given.
+func TestIntegration_Reconcile_MatchConditionsAccepted(t *testing.T) {
+	g := NewWithT(t)
+	ctx := ctrl.LoggerInto(context.Background(), testr.New(t))
+	seedVWC(t, g)
+
+	r := newMatchConditionsReconciler(t)
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: itWebhookName},
+	})
+	g.Expect(err).NotTo(HaveOccurred(), "the apiserver rejected the generated matchConditions")
+
+	var got admissionregistrationv1.ValidatingWebhookConfiguration
+	g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: itWebhookName}, &got)).To(Succeed())
+	g.Expect(got.Webhooks).To(HaveLen(2))
+
+	excluded := config.ExcludedGroups()
+	for _, entry := range got.Webhooks {
+		// A single wildcard rule replaces the per-GroupVersion list.
+		g.Expect(entry.Rules).To(HaveLen(1), "entry %s", entry.Name)
+		g.Expect(entry.Rules[0].APIGroups).To(Equal([]string{"*"}), "entry %s", entry.Name)
+		g.Expect(entry.Rules[0].APIVersions).To(Equal([]string{"*"}), "entry %s", entry.Name)
+		g.Expect(entry.Rules[0].Resources).To(Equal([]string{"*"}), "entry %s", entry.Name)
+		g.Expect(entry.Rules[0].Scope).NotTo(BeNil(), "entry %s", entry.Name)
+		g.Expect(*entry.Rules[0].Scope).To(Equal(admissionregistrationv1.AllScopes), "entry %s", entry.Name)
+
+		// The exclusions survived the round-trip. If the apiserver had pruned
+		// them, the wildcard rule would cover the webhook's own configuration.
+		g.Expect(entry.MatchConditions).To(HaveLen(len(excluded)), "entry %s", entry.Name)
+		for i, group := range excluded {
+			g.Expect(entry.MatchConditions[i].Expression).To(ContainSubstring(group), "entry %s", entry.Name)
+		}
+	}
+}
+
+// TestIntegration_Reconcile_MatchConditionsIdempotent guards the repeated-apply
+// path: matchConditions are an atomic list keyed by name, so a second Apply must
+// not duplicate or drop them.
+func TestIntegration_Reconcile_MatchConditionsIdempotent(t *testing.T) {
+	g := NewWithT(t)
+	ctx := ctrl.LoggerInto(context.Background(), testr.New(t))
+	seedVWC(t, g)
+
+	r := newMatchConditionsReconciler(t)
+
+	for i := 0; i < 2; i++ {
+		_, err := r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: itWebhookName},
+		})
+		g.Expect(err).NotTo(HaveOccurred(), "Reconcile pass %d", i+1)
+	}
+
+	var got admissionregistrationv1.ValidatingWebhookConfiguration
+	g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: itWebhookName}, &got)).To(Succeed())
+	for _, entry := range got.Webhooks {
+		g.Expect(entry.Rules).To(HaveLen(1), "entry %s", entry.Name)
+		g.Expect(entry.MatchConditions).To(HaveLen(len(config.ExcludedGroups())), "entry %s", entry.Name)
+	}
 }

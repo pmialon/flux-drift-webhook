@@ -1997,3 +1997,59 @@ func TestCachedObjectTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestHandle_ExcludedGroupAllowed covers the self-lockout guard. A
+// ValidatingWebhookConfiguration applied by Flux carries Flux labels and a Flux
+// fieldManager, so without this the webhook would deny every write to its own
+// configuration — including the repair, making the cluster unrecoverable
+// without deleting the VWC by hand.
+func TestHandle_ExcludedGroupAllowed(t *testing.T) {
+	for _, op := range []admissionv1.Operation{
+		admissionv1.Create, admissionv1.Update, admissionv1.Delete,
+	} {
+		t.Run(string(op), func(t *testing.T) {
+			handler := newTestHandler()
+
+			// Flux-applied: labels plus a kustomize-controller SSA entry. Every
+			// other signal says "deny"; only the group exclusion saves it.
+			raw := buildTestJSON(fluxKustomizeLabels, nil, fluxKustomizeManagedFields(), nil)
+			obj := runtime.RawExtension{Raw: raw}
+
+			req := createAdmissionRequest(op, obj, "", "flux-drift-webhook.fluxcd.io")
+			req.UserInfo = authenticationv1.UserInfo{Username: "admin@example.com"}
+			req.Kind = metav1.GroupVersionKind{
+				Group: config.ExcludedGroupAdmission, Version: "v1", Kind: "ValidatingWebhookConfiguration",
+			}
+			req.Resource = metav1.GroupVersionResource{
+				Group: config.ExcludedGroupAdmission, Version: "v1", Resource: "validatingwebhookconfigurations",
+			}
+
+			resp := handler.Handle(context.Background(), req)
+
+			if !resp.Allowed {
+				t.Fatalf("%s on an excluded group was denied: %s", op, resp.Result.Message)
+			}
+			if !strings.Contains(resp.Result.Message, "excluded") {
+				t.Errorf("expected the excluded-group reason, got: %s", resp.Result.Message)
+			}
+		})
+	}
+}
+
+// TestHandle_NonExcludedGroupStillGuarded is the counterpart: the guard must be
+// scoped to the excluded groups and not weaken protection anywhere else.
+func TestHandle_NonExcludedGroupStillGuarded(t *testing.T) {
+	handler := newTestHandler()
+
+	obj := runtime.RawExtension{Raw: buildTestJSON(fluxKustomizeLabels, nil, fluxKustomizeManagedFields(), nil)}
+
+	req := createAdmissionRequest(admissionv1.Delete, obj, "default", "test-pod")
+	req.UserInfo = authenticationv1.UserInfo{Username: "admin@example.com"}
+	req.Resource = metav1.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+
+	resp := handler.Handle(context.Background(), req)
+
+	if resp.Allowed {
+		t.Error("DELETE of a Flux-applied resource outside the excluded groups must still be denied")
+	}
+}
