@@ -104,7 +104,7 @@ graph TB
 - FluxCD installed in cluster (any version supporting SSA)
 - cert-manager for TLS certificate management
 - Kustomize 5.4+ for deployment
-- Go 1.26.0+ to build from source
+- Go 1.26.5+ to build from source
 
 ### Key Dependencies
 

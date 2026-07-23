@@ -270,7 +270,7 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 
 ## Prerequisites
 
-- Go 1.26.0
+- Go 1.26.5
 - cert-manager installed in cluster
 - FluxCD installed in `flux-system` namespace
 - Kustomize 5.4+

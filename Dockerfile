@@ -1,4 +1,4 @@
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.26.5
 ARG XX_VERSION=1.9.0
 
 # Cross-compilation helpers (https://github.com/tonistiigi/xx)
