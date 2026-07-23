@@ -644,9 +644,11 @@ else
 
         # T12b: with the namespace informer unable to list, a replacement pod must
         # not become Ready. One pod is deleted rather than doing a rollout
-        # restart: each pod requests 2 CPU, so on a single-node cluster a surge
-        # pod just stays Pending — the rollout would stall for lack of capacity
-        # and the assertion would pass without proving anything about readiness.
+        # restart, so the replica count stays constant and the assertion never
+        # depends on the node having room for a surge pod. That is not
+        # hypothetical: when pods requested 2 CPU the surge pod stayed Pending,
+        # so the rollout stalled for lack of capacity rather than lack of
+        # readiness — and a Pending pod has no Ready condition for T12c to probe.
         NS_RULE_LINE=$(kubectl get clusterrole "${WEBHOOK_CLUSTERROLE}" \
             -o jsonpath='{range .rules[*]}{.resources}{"\n"}{end}' 2>/dev/null \
             | grep -n 'namespaces' | head -1 | cut -d: -f1) || true

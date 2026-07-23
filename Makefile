@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-integration test-e2e test-webhook fuzz-smoketest lint fmt vet tidy coverage docker-build docker-push deploy-dev deploy-prod verify verify-structure verify-manifests verify-docker verify-dirty clean envtest
+.PHONY: build test test-unit test-integration test-e2e e2e-vendor test-webhook fuzz-smoketest lint fmt vet tidy coverage docker-build docker-push deploy-dev deploy-prod verify verify-structure verify-manifests verify-docker verify-dirty clean envtest
 
 IMG ?= flux-drift-webhook:latest
 
@@ -14,6 +14,11 @@ FUZZ_TIME ?= 20s
 # moving tool version. Fall back to 1.35.0 if 1.36.0 assets are unavailable;
 # in restricted networks, pre-seed $(LOCALBIN) and run with
 # ENVTEST_INSTALLED_ONLY=1, or point --index at a mirror.
+# Third-party manifests vendored under e2e/ so `make test-e2e` runs offline
+# straight after a clone. Refresh them with `make e2e-vendor`.
+CERT_MANAGER_VERSION ?= v1.21.0
+PROMETHEUS_OPERATOR_VERSION ?= v0.92.1
+
 LOCALBIN ?= $(CURDIR)/bin
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1
 ENVTEST_K8S_VERSION ?= 1.36.0
@@ -54,6 +59,15 @@ test-integration: envtest
 
 test-e2e:
 	./e2e/run-e2e.sh
+
+## Re-download the vendored e2e manifests at the pinned versions above.
+## They are committed, so this is only needed when bumping a version.
+e2e-vendor:
+	curl -sSLf -o e2e/cert-manager.yaml \
+		"https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml"
+	curl -sSLf -o e2e/podmonitor-crd.yaml \
+		"https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/$(PROMETHEUS_OPERATOR_VERSION)/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml"
+	@echo "Vendored cert-manager $(CERT_MANAGER_VERSION) and prometheus-operator $(PROMETHEUS_OPERATOR_VERSION)"
 
 test-webhook:
 	./e2e/test-webhook.sh
