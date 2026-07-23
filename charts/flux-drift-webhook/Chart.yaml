@@ -3,9 +3,11 @@ name: flux-drift-webhook
 description: Validating admission webhook that prevents manual drift on FluxCD-managed resources
 type: application
 # Chart SemVer and default image tag. CI overrides both with the git tag at
-# package time (helm package --version/--app-version "${GITHUB_REF_NAME#v}").
-version: 0.1.0
-appVersion: "0.1.0"
+# package time (helm package --version/--app-version "${GITHUB_REF_NAME#v}"),
+# so these values only affect an install straight from a clone — but keep them
+# on the latest release, or such an install silently pulls an older image.
+version: 0.2.0
+appVersion: "0.2.0"
 # The webhook rules rely on CEL matchConditions, GA since Kubernetes 1.30.
 kubeVersion: ">=1.30.0-0"
 keywords:

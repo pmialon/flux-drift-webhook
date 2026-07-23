@@ -69,9 +69,13 @@ flux create helmrelease flux-drift-webhook \
   --source=HelmRepository/flux-drift-webhook \
   --release-name=flux-drift-webhook \
   --chart=flux-drift-webhook \
-  --chart-version=">=0.1.0" \
+  --chart-version=">=0.2.0 <0.3.0" \
   --values=flux-drift-webhook-values.yaml
 ```
+
+The range is bounded on purpose. This is a 0.x chart, so a minor bump may carry a breaking change —
+0.2.0 raised the Kubernetes floor to 1.30 — and an open-ended `>=` constraint would have Flux apply
+that automatically. Widen it deliberately when you have read the release notes.
 
 Flux upgrades the release automatically when a new chart version is published. If an upgrade fails,
 Flux can [roll back](https://fluxcd.io/flux/components/helm/helmreleases/#configuring-failure-remediation)
