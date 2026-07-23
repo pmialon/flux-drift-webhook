@@ -44,7 +44,7 @@ HPA manages:      spec.replicas
 → User updates spec.template       ❌ DENIED
 ```
 
-Three properties make the check robust against real drift:
+Four properties make the check robust against real drift:
 
 - The protected set is read from the **old** object's `managedFields` — the API
   server transfers field ownership to the requester *before* validating
@@ -220,19 +220,31 @@ Override defaults via environment variables:
 - `FLUX_NAMESPACE` — Override Flux namespace
 - `WEBHOOK_NAME` — Override ValidatingWebhookConfiguration name
 - `VWC_RESYNC_INTERVAL` — Override the ValidatingWebhookConfiguration resync interval (`DISCOVERY_INTERVAL` is the deprecated alias)
-- `SYSTEM_CONTROLLER_SAS` — Extra control-plane SAs (CSV of `namespace:name`) for derived-resource CREATE bypass
+- `SYSTEM_CONTROLLER_SAS` — Extra control-plane identities (CSV of `namespace:name` or full `system:` usernames) allowed to CREATE derived resources and DELETE Flux-applied ones
 
 ### Bypass Mechanisms
 
-#### 1. Flux Controllers (Automatic)
+#### 1. The Owning Flux Controller (Automatic)
 
-Requests from Flux controllers are always allowed:
+Requests from the Flux controller that owns the resource are allowed:
 - `kustomize-controller`
 - `helm-controller`
 - `source-controller`
 - `notification-controller`
 - `image-reflector-controller`
 - `image-automation-controller`
+
+Ownership is checked, not just identity: a Flux controller acting on a resource
+whose labels name a *different* owner is denied (`denied_wrong_flux_controller`),
+which is how dual-ownership shows up — see
+[Ownership Conflict Detection](#core-capabilities).
+
+In **multi-tenant** setups Flux reconciles via an impersonated per-tenant service
+account. The webhook resolves the legitimate identity dynamically: it reads
+`.spec.serviceAccountName` from the owning Kustomization/HelmRelease and accepts
+`system:serviceaccount:<owner-ns>:<that-sa>`. If the owner cannot be read or sets
+no service account, it falls back to the built-in names (default
+`flux-reconciler`).
 
 #### 2. Bypass Annotation
 
@@ -427,6 +439,7 @@ flux-drift-webhook/
 │   └── webhook/             # Core webhook logic
 │       ├── handler.go       # Admission handler
 │       ├── fields.go        # SSA field protection
+│       ├── ignore.go        # Kustomization .spec.ignore (DriftIgnoreRules)
 │       ├── auth.go          # Authentication
 │       └── labels.go        # Label detection
 ├── deploy/
@@ -434,7 +447,8 @@ flux-drift-webhook/
 │   └── overlays/            # Environment overlays
 │       ├── dev/             # Audit-only mode
 │       └── prod/            # Enforce mode (no --audit-only patch)
-└── e2e/                     # E2E tests
+└── e2e/                     # E2E suites (audit + enforce) and vendored
+                             # cert-manager / PodMonitor CRD / Flux / podinfo
 ```
 
 ### Building from Source
@@ -540,7 +554,11 @@ chart published as an OCI artefact, and a GitHub release with checksums.
    ```bash
    kubectl get deployment <name> -n <namespace> -o yaml | grep -A 20 managedFields
    ```
-3. If SSA is not used, consider adding the controller to the allowlist (future improvement)
+3. If the controller does **not** use SSA, the webhook cannot attribute its change
+   and will deny it. Exclude the field via the owning Kustomization's
+   `.spec.ignore` (see [2c](#2c-ignored-fields-specignore)), or use the bypass
+   annotation. Allowlisting such controllers on UPDATE is a
+   [future improvement](#future-improvements).
 </details>
 
 <details>
@@ -592,23 +610,42 @@ kubectl scale deployment flux-drift-webhook -n flux-system --replicas=0
 
 ## Roadmap
 
-### v1.0 (Current)
+### Shipped (v0.2.0)
 
 - [x] Core drift prevention logic
-- [x] Field-level protection using SSA
-- [x] Whole-API coverage via a wildcard rule + CEL matchConditions
-- [x] Prometheus metrics
+- [x] Field-level protection using SSA `managedFields`, hierarchy-aware
+- [x] Whole-API coverage via a wildcard rule + CEL `matchConditions`
+- [x] CREATE protection driven by the owner `.status.inventory` (squat veto)
+- [x] Multi-tenant identity resolution via the owner's `.spec.serviceAccountName`
+- [x] Waiver for fields the owning Kustomization excludes (`.spec.ignore`)
+- [x] `managedFields` tampering and two-step bypass guards
+- [x] Control-plane allowlist for derived-resource CREATE and lifecycle DELETE
+      (`--system-controller-sas`)
+- [x] Namespace-teardown cascade handling
+- [x] Readiness gated on informer cache sync
+- [x] Prometheus metrics, including ownership-conflict detection
 - [x] Audit mode
-- [x] Bypass annotation
+- [x] Bypass annotation and `reconcile: disabled`
 
 ### Future Improvements
 
 Planned enhancements:
 
-- **Whitelist of System Service Accounts** — Allow specific controllers without SSA dependency
-- **Per-Resource Field Exclusion** — Annotation-based field exclusion for fine-grained control
-- **Custom Resource Definition (CRD) Support** — Better handling of CRDs
-- **Webhook Configuration Policies** — Declarative configuration via CRDs
+- **Allowlisting non-SSA controllers on UPDATE** — the existing
+  `--system-controller-sas` allowlist covers CREATE of derived resources and
+  lifecycle DELETE only. A controller that mutates a Flux-owned field *without*
+  using Server-Side Apply is still denied, because there is no `managedFields`
+  entry to attribute the change to. Today the answer is `.spec.ignore` on the
+  owning Kustomization, or the bypass annotation.
+- **Per-resource field exclusion** — `.spec.ignore` already excludes fields, but
+  only from the owning **Kustomization**, and only for Kustomization-owned
+  objects. An annotation on the resource itself would cover HelmRelease-owned
+  objects, which have no equivalent today.
+- **Ignore pointers inside keyed lists** — the value diff is schema-blind and
+  collapses a keyed-list edit to the list path, so an ignore pointer such as
+  `/spec/template/spec/containers/0/image` does not waive. Making the diff
+  schema-aware would lift that restriction.
+- **Webhook configuration policies** — declarative configuration via CRDs.
 
 ## Contributing
 
