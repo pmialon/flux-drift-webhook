@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-integration test-e2e e2e-vendor test-webhook fuzz-smoketest lint fmt vet tidy coverage docker-build docker-push deploy-dev deploy-prod verify verify-structure verify-manifests verify-docker verify-dirty clean envtest
+.PHONY: build test test-unit test-integration test-e2e e2e-vendor test-webhook test-enforce fuzz-smoketest lint fmt vet tidy coverage docker-build docker-push deploy-dev deploy-prod verify verify-structure verify-manifests verify-docker verify-dirty clean envtest
 
 IMG ?= flux-drift-webhook:latest
 
@@ -18,6 +18,9 @@ FUZZ_TIME ?= 20s
 # straight after a clone. Refresh them with `make e2e-vendor`.
 CERT_MANAGER_VERSION ?= v1.21.0
 PROMETHEUS_OPERATOR_VERSION ?= v0.92.1
+# Flux itself, so the e2e suite exercises the owner-inventory paths against real
+# Kustomization/HelmRelease CRDs rather than a cluster where they do not exist.
+FLUX_VERSION ?= v2.9.2
 
 LOCALBIN ?= $(CURDIR)/bin
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1
@@ -67,10 +70,16 @@ e2e-vendor:
 		"https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml"
 	curl -sSLf -o e2e/podmonitor-crd.yaml \
 		"https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/$(PROMETHEUS_OPERATOR_VERSION)/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml"
-	@echo "Vendored cert-manager $(CERT_MANAGER_VERSION) and prometheus-operator $(PROMETHEUS_OPERATOR_VERSION)"
+	curl -sSLf -o e2e/flux-install.yaml \
+		"https://github.com/fluxcd/flux2/releases/download/$(FLUX_VERSION)/install.yaml"
+	@echo "Vendored cert-manager $(CERT_MANAGER_VERSION), prometheus-operator $(PROMETHEUS_OPERATOR_VERSION), flux $(FLUX_VERSION)"
 
 test-webhook:
 	./e2e/test-webhook.sh
+
+## Enforce-mode assertions; needs a webhook with --audit-only=false and Flux CRDs.
+test-enforce:
+	./e2e/test-enforce.sh
 
 ## Coverage
 coverage: test
