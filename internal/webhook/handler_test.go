@@ -33,6 +33,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -1961,5 +1963,37 @@ func TestHandle_UpdateIgnoreIndexPathDenied(t *testing.T) {
 
 	if resp.Allowed {
 		t.Error("expected denied: array-index ignore path cannot match the collapsed list conflict")
+	}
+}
+
+// TestCachedObjectTypes pins the pre-warm list to what the handler actually
+// reads through the cache. A type dropped here is created lazily by the first
+// admission request that needs it, which pays the list+watch inline while the
+// fail-closed checks that depend on it deny legitimate traffic.
+func TestCachedObjectTypes(t *testing.T) {
+	want := []schema.GroupVersionKind{
+		{Group: "", Version: "v1", Kind: "Namespace"},
+		{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization"},
+		{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"},
+	}
+
+	objs := CachedObjectTypes()
+	if len(objs) != len(want) {
+		t.Fatalf("CachedObjectTypes() returned %d types, want %d", len(objs), len(want))
+	}
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	for i, obj := range objs {
+		gvk, err := apiutil.GVKForObject(obj, scheme)
+		if err != nil {
+			t.Fatalf("GVKForObject(%T): %v", obj, err)
+		}
+		if gvk != want[i] {
+			t.Errorf("CachedObjectTypes()[%d] = %v, want %v", i, gvk, want[i])
+		}
 	}
 }

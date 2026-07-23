@@ -403,7 +403,7 @@ histogram_quantile(0.95, rate(flux_drift_webhook_latency_seconds_bucket[5m]))
 ### Health Endpoints
 
 - `/healthz` — Liveness probe
-- `/readyz` — Readiness probe
+- `/readyz` — Readiness probe. Green only once **both** the TLS listener is serving and the informer caches have completed their initial sync. The cache gate matters: controller-runtime starts the webhook server before the caches, and the cache-backed checks (namespace-terminating cascade, CREATE owner inventory, tenant service-account resolution) are fail-closed — without it the pod would deny legitimate requests during its cold start
 
 ## Development
 
