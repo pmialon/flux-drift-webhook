@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	"github.com/pmialon/flux-drift-webhook/internal/config"
 )
 
 func TestGetEnv(t *testing.T) {
@@ -148,4 +150,46 @@ func TestCachesSyncedNeedLeaderElection(t *testing.T) {
 	}
 	var _ manager.LeaderElectionRunnable = c
 	var _ manager.Runnable = c
+}
+
+// TestResyncIntervalDefault pins the environment precedence for the resync
+// interval. DISCOVERY_INTERVAL is the pre-1.0 name kept as an alias, so a
+// deployment that set it must not silently fall back to the built-in default
+// on upgrade.
+func TestResyncIntervalDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		vwcEnv  string
+		legacy  string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "neither set uses the built-in default", want: config.DefaultVWCResyncInterval},
+		{name: "legacy alone is honoured", legacy: "7m", want: 7 * time.Minute},
+		{name: "new name alone", vwcEnv: "4m", want: 4 * time.Minute},
+		{name: "new name wins over the alias", vwcEnv: "4m", legacy: "7m", want: 4 * time.Minute},
+		{name: "invalid new name errors", vwcEnv: "nope", wantErr: true},
+		{name: "invalid alias errors", legacy: "nope", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("VWC_RESYNC_INTERVAL", tt.vwcEnv)
+			t.Setenv("DISCOVERY_INTERVAL", tt.legacy)
+
+			got, err := resyncIntervalDefault()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("resyncIntervalDefault() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }

@@ -21,7 +21,6 @@ flux-drift-webhook/
 │   │   ├── webhook_config.go                       # Controller updating ValidatingWebhookConfiguration
 │   │   ├── suite_test.go                           # envtest suite bootstrap (build tag: integration)
 │   │   └── webhook_config_integration_test.go      # envtest integration tests (build tag: integration)
-│   ├── discovery/discovery.go          # GVK discovery via Kubernetes API
 │   ├── metrics/metrics.go              # Prometheus metrics
 │   └── webhook/
 │       ├── handler.go                  # Main admission logic
@@ -176,17 +175,23 @@ When the inventory **cannot be read** (owner missing, empty inventory, cache lag
 
 > **Design note:** treating the inherited Flux **label** as proof of management is the root cause of false positives on derived objects. The non-inheritable proof of management is the Flux SSA `fieldManager` (mirrors Google Config Sync, which keys management off a self-referential `resource-id` annotation rather than an inheritable label).
 
-### Dynamic GVK Discovery
+### Webhook Rules (static, CEL-filtered)
 
-The controller periodically queries `ServerGroupsAndResources()` and updates the `ValidatingWebhookConfiguration` with rules for each discovered GroupVersion. The `admissionregistration.k8s.io` group is excluded to prevent infinite loops.
+The VWC carries **one wildcard rule** per webhook entry — `apiGroups`, `apiVersions` and `resources` all `["*"]`, `Scope: "*"` — with the API-group exclusions expressed as CEL `matchConditions` (`request.resource.group != "admissionregistration.k8s.io"`, one condition per entry in `config.ExcludedGroups()`). Every kind the cluster serves is covered, including CRDs installed at any moment.
 
-Rules carry **`Scope: "*"`** — cluster-scoped Flux-managed objects (Namespaces, CRDs, ClusterRoles, PVs, …) are protected too; with `Namespaced` scope, `kubectl delete namespace` was an unguarded mass-delete primitive. The objectSelector keeps unlabelled cluster-scoped objects out of the webhook. Semantics worth knowing: for a **Namespace** object the request namespace is the namespace's own name (so the namespaced code paths apply, and the VWC `namespaceSelector` matches the namespace's own labels — system namespaces stay exempt); for **other** cluster-scoped kinds the request namespace is empty (always in scope; the `--namespace-label` filter and the namespace-terminating bypass do not apply). The legitimate way to delete a Flux-managed namespace is removing it from Git — Flux prunes it as the owning reconciler.
+This replaced periodic `ServerGroupsAndResources()` discovery with a rule per GroupVersion. That approach left a window of up to one refresh interval before a new CRD was covered, and rewrote a rule list that grew with the cluster's API surface on every refresh. The `internal/discovery` package and the `flux_drift_webhook_discovery_errors_total` metric were removed with it; the controller now only re-applies the VWC on `--vwc-resync-interval` to re-assert ownership after an out-of-band edit.
 
-The VWC carries **two webhook entries** (`kustomize.<name>` and `helm.<name>`), each with an `objectSelector` requiring the corresponding Flux ownership label (`kustomize.toolkit.fluxcd.io/name` / `helm.toolkit.fluxcd.io/name`, operator `Exists`). Two entries express the OR a single label selector cannot: the API server only forwards requests for objects carrying at least one Flux ownership label, sparing every unrelated write a webhook round-trip. The selector matches the **old or the new** object on UPDATE/DELETE, so stripping the labels in a request cannot dodge interception; the in-handler `allowed_not_managed` gate remains as defence in depth (expect its metric volume to collapse once this pre-filter is live). An object carrying both labels is evaluated by both entries (idempotent decision, double-counted metrics — rare edge).
+> **Kubernetes floor: 1.30.** `matchConditions` is GA from 1.30 (alpha and gated off in 1.27, beta in 1.28). On an older server the field is pruned silently, leaving the wildcard rule with no exclusion — the webhook would then receive requests for its own configuration. It would still **allow** them (see the handler guard below), so the degradation is extra traffic rather than breakage, but 1.30 is the supported floor and the chart declares `kubeVersion: ">=1.30.0-0"`.
+
+> **The webhook cannot lock itself out.** The handler independently allows any request whose `req.Resource.Group` is in `config.ExcludedGroups()` (`allowed_excluded_group`), so the CEL exclusion is an optimisation, not a safety-critical mechanism. This matters because a VWC deployed *by Flux* carries Flux labels and a Flux `fieldManager`: without the handler guard, a pruned or mis-scoped `matchCondition` would make the webhook deny every write to its own configuration — including the repair.
+
+`Scope: "*"` — cluster-scoped Flux-managed objects (Namespaces, CRDs, ClusterRoles, PVs, …) are protected too; with `Namespaced` scope, `kubectl delete namespace` was an unguarded mass-delete primitive. The objectSelector keeps unlabelled cluster-scoped objects out of the webhook. Semantics worth knowing: for a **Namespace** object the request namespace is the namespace's own name (so the namespaced code paths apply, and the VWC `namespaceSelector` matches the namespace's own labels — system namespaces stay exempt); for **other** cluster-scoped kinds the request namespace is empty (always in scope; the `--namespace-label` filter and the namespace-terminating bypass do not apply). The legitimate way to delete a Flux-managed namespace is removing it from Git — Flux prunes it as the owning reconciler.
+
+The VWC carries **two webhook entries** (`kustomize.<name>` and `helm.<name>`), each with an `objectSelector` requiring the corresponding Flux ownership label (`kustomize.toolkit.fluxcd.io/name` / `helm.toolkit.fluxcd.io/name`, operator `Exists`). Two entries express the OR a single label selector cannot: the API server only forwards requests for objects carrying at least one Flux ownership label, sparing every unrelated write a webhook round-trip. The selector matches the **old or the new** object on UPDATE/DELETE, so stripping the labels in a request cannot dodge interception; the in-handler `allowed_not_managed` gate remains as defence in depth. The API server evaluates `matchConditions` **after** the rules and both selectors, so the CEL runs only for objects already carrying a Flux label. An object carrying both labels is evaluated by both entries (idempotent decision, double-counted metrics — rare edge).
 
 ### Leader Election
 
-Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtime` `leaderelection.Options` via `--enable-leader-election` (with tunable lease/renew/retry durations and release-on-cancel). The `LeaderElectionID` is `flux-drift-webhook-leader`. The deploy overlays pass `--enable-leader-election=true`. All replicas serve admission requests, but only the leader performs GVK discovery and updates the `ValidatingWebhookConfiguration`. This prevents conflicting SSA patches from multiple replicas.
+Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtime` `leaderelection.Options` via `--enable-leader-election` (with tunable lease/renew/retry durations and release-on-cancel). The `LeaderElectionID` is `flux-drift-webhook-leader`. The deploy overlays pass `--enable-leader-election=true`. All replicas serve admission requests, but only the leader updates the `ValidatingWebhookConfiguration`. This prevents conflicting SSA patches from multiple replicas.
 
 ### Manager Bootstrap
 
@@ -214,12 +219,13 @@ Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtim
 | `--log-encoding` | `json` | Log encoding format (`json` or `console`) |
 | `--flux-namespace` | `flux-system` | Namespace where Flux is installed (env: `FLUX_NAMESPACE`) |
 | `--webhook-name` | `flux-drift-webhook.fluxcd.io` | ValidatingWebhookConfiguration name (env: `WEBHOOK_NAME`) |
-| `--discovery-interval` | `5m` | GVK discovery refresh interval (env: `DISCOVERY_INTERVAL`) |
+| `--vwc-resync-interval` | `5m` | Interval between ValidatingWebhookConfiguration re-applies (env: `VWC_RESYNC_INTERVAL`) |
+| `--discovery-interval` | `5m` | **Deprecated** alias for `--vwc-resync-interval`, kept so existing deployments keep starting (env: `DISCOVERY_INTERVAL`) |
 | `--namespace-label` | *(empty)* | Optional: namespace label key to filter webhook scope |
 | `--namespace-label-value` | *(empty)* | Optional: required label value (needs `--namespace-label`) |
 | `--namespace-fetch-timeout` | `2s` | Timeout for namespace label lookups |
 | `--system-controller-sas` | *(empty)* | Extra control-plane identities (CSV of `namespace:name` SA shorthands or full `system:` usernames) allowed to CREATE Flux-labelled derived resources and DELETE Flux-applied resources (lifecycle); merged with built-in defaults (env: `SYSTEM_CONTROLLER_SAS`) |
-| `--enable-leader-election` | `false` | Enable leader election (only one active manager performs discovery/VWC updates) |
+| `--enable-leader-election` | `false` | Enable leader election (only the leader applies the VWC) |
 | `--leader-election-lease-duration` | `35s` | Interval non-leader candidates wait before force-acquiring leadership |
 | `--leader-election-renew-deadline` | `30s` | Duration the leader retries refreshing leadership before giving up |
 | `--leader-election-retry-period` | `5s` | Duration `LeaderElector` clients wait between action retries |
@@ -239,7 +245,6 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 | `flux_drift_webhook_denials_total` | Counter | `operation`, `kind` | Denied requests only |
 | `flux_drift_webhook_ownership_conflicts_total` | Counter | `kind`, `previous_owner`, `new_owner` | Dual/multiple ownership: Flux owner labels flipped between two reconcilers (owners as `namespace/name`; recorded on each `denied_wrong_flux_controller`) |
 | `flux_drift_webhook_latency_seconds` | Histogram | `operation` | Request processing latency |
-| `flux_drift_webhook_discovery_errors_total` | Counter | — | GVK discovery errors |
 | `flux_drift_webhook_config_updates_total` | Counter | `status` | VWC update attempts |
 
 **Decision label values** for `requests_total`:
@@ -257,6 +262,7 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 - `allowed_system_controller` — CREATE by a recognised control-plane controller (e.g. endpoint/endpointslice controllers), or DELETE of a Flux-applied resource by one (GC cascade, Job TTL/CronJob cleanup)
 - `allowed_not_in_owner_inventory` — CREATE of an object whose id is absent from the owning Kustomization/HelmRelease `.status.inventory` (Flux labels inherited from a parent, e.g. an operator-derived resource)
 - `allowed_subresource` — request for a sub-resource (status/scale/…); not subject to drift prevention
+- `allowed_excluded_group` — request targets an API group in `config.ExcludedGroups()` (`admissionregistration.k8s.io`); never guarded, so the webhook cannot lock itself out of its own configuration
 - `denied_parse_error` — failed to parse objects for field check (fail-closed)
 - `denied_managed_fields_error` — failed to extract managed fields (fail-closed)
 - `denied_managed_fields_tampered` — UPDATE releasing Flux field ownership without a value change (managedFields wipe / SSA manager-name spoof)
@@ -272,6 +278,7 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 ## Prerequisites
 
 - Go 1.26.5
+- Kubernetes 1.30+ (CEL `matchConditions` are GA from 1.30)
 - cert-manager installed in cluster
 - FluxCD installed in `flux-system` namespace
 - Kustomize 5.4+
@@ -294,26 +301,25 @@ For the integration suite, `setup-envtest` provides the envtest assets (`ENVTEST
 
 | File | Coverage |
 |------|----------|
-| `internal/webhook/handler_test.go` | All decision paths: not-managed, Flux controller (own + wrong), bypass annotation (valid + single-step attack + never on CREATE + introduction denied), `reconcile: disabled` (UPDATE/DELETE allow, Helm not honoured, introduction denied), deletion in progress, namespace-teardown cascade (terminating allow, active deny, fail-closed helper), CREATE (inventory veto incl. forged ownerReference and system-controller, not-in-inventory allow, empty/unreadable inventory fail-closed with distinct reason, RBAC colon ids, owned-resource/system-controller heuristics), DELETE deny (genuinely Flux-applied) + cluster-scoped (ClusterRole, Namespace), UPDATE protection with realistic apiserver-shaped fieldsV1 (container-image drift denied, HPA replicas allowed, label-strip denied, managedFields wipe denied), audit-only mode, fail-closed error paths, HelmRelease label paths, sub-resource allow, non-SA `system:apiserver` DELETE allow, `CachedObjectTypes` pre-warm list (`TestCachedObjectTypes`, pinned to what the handler reads through the cache), UPDATE `.spec.ignore` waiver (exact-path/label-selector/list-path waived; target mismatch/array-index-path/owner-unreadable/Helm-owner denied; ignore cannot disarm ownership of other fields) |
+| `internal/webhook/handler_test.go` | All decision paths: not-managed, Flux controller (own + wrong), bypass annotation (valid + single-step attack + never on CREATE + introduction denied), `reconcile: disabled` (UPDATE/DELETE allow, Helm not honoured, introduction denied), deletion in progress, namespace-teardown cascade (terminating allow, active deny, fail-closed helper), CREATE (inventory veto incl. forged ownerReference and system-controller, not-in-inventory allow, empty/unreadable inventory fail-closed with distinct reason, RBAC colon ids, owned-resource/system-controller heuristics), DELETE deny (genuinely Flux-applied) + cluster-scoped (ClusterRole, Namespace), UPDATE protection with realistic apiserver-shaped fieldsV1 (container-image drift denied, HPA replicas allowed, label-strip denied, managedFields wipe denied), audit-only mode, fail-closed error paths, HelmRelease label paths, sub-resource allow, excluded-group allow on CREATE/UPDATE/DELETE plus the counterpart proving other groups stay guarded, non-SA `system:apiserver` DELETE allow, `CachedObjectTypes` pre-warm list (`TestCachedObjectTypes`, pinned to what the handler reads through the cache), UPDATE `.spec.ignore` waiver (exact-path/label-selector/list-path waived; target mismatch/array-index-path/owner-unreadable/Helm-owner denied; ignore cannot disarm ownership of other fields) |
 | `internal/webhook/fields_test.go` | SSA managedFields extraction, value-based field diff, hierarchy-aware conflict detection (keyed-list ancestor/descendant overlap, disjoint and sibling non-conflicts), concurrent kustomize + helm managers (union of fields), `WaiveIgnoredConflicts` set algebra (exact/descendant waived, ancestor not waived, nil operands) |
 | `internal/webhook/ignore_test.go` | `.spec.ignore` parsing (`parseIgnoreRules`), RFC 6901 JSON-pointer conversion (`jsonPointerToPath` escaping/root/error), full target-Selector matching (`ruleMatchesObject` anchored gvk/name/ns regexes, label/annotation selectors, invalid-input errors), `ignoreSetForObject` (target filtering, fail-closed) |
 | `internal/webhook/auth_test.go` | Service account identity parsing (`IsFluxController` 11 edge cases; `IsSystemController` control-plane allow-list incl. configurable entry, non-SA full usernames `system:apiserver`/`system:kube-controller-manager`, and the non-`system:` spoof guard) |
 | `internal/webhook/labels_test.go` | Flux label detection, bypass annotation check |
-| `internal/controller/webhook_config_test.go` | VWC reconciliation, rule building, empty version skipping |
-| `internal/discovery/discovery_test.go` | GVK discovery, excluded groups filtering |
+| `internal/controller/webhook_config_test.go` | VWC reconciliation (single wildcard rule + match conditions on both entries), `ConfigUpdated` event, `wildcardRules` shape (`*`/`*`/`*` + AllScopes + CUD), `matchConditions` (one condition per excluded group on **both** entries, admission group covered) |
 | `internal/metrics/metrics_test.go` | Metrics registration, counter recording |
-| `cmd/webhook/main_test.go` | `getEnv` (`TestGetEnv`), `getEnvDuration` (`TestGetEnvDuration`), `mergeSystemControllerSAs` (`TestMergeSystemControllerSAs`) helpers, and the readiness gate: `TestCachesSyncedCheck` (red before sync, green after `Start`, clean shutdown) and `TestCachesSyncedNeedLeaderElection` (must stay `false`, else non-leader replicas never become Ready) — the bespoke `setupLogger` helper was removed (logging is now `fluxcd/pkg/runtime/logger`) |
+| `cmd/webhook/main_test.go` | `getEnv` (`TestGetEnv`), `getEnvDuration` (`TestGetEnvDuration`), `mergeSystemControllerSAs` (`TestMergeSystemControllerSAs`), `resyncIntervalDefault` (`TestResyncIntervalDefault`: `VWC_RESYNC_INTERVAL` wins over the deprecated `DISCOVERY_INTERVAL` alias, both honoured, both validated) helpers, and the readiness gate: `TestCachesSyncedCheck` (red before sync, green after `Start`, clean shutdown) and `TestCachesSyncedNeedLeaderElection` (must stay `false`, else non-leader replicas never become Ready) — the bespoke `setupLogger` helper was removed (logging is now `fluxcd/pkg/runtime/logger`) |
 
 ### Integration tests (envtest)
 
 A `//go:build integration` suite lives in `internal/controller/{suite_test.go, webhook_config_integration_test.go}` and runs against a real apiserver provided by envtest (`make test-integration`). It uses Gomega (`NewWithT`) and drives `Reconcile` directly with a cacheless client. It asserts:
 
 - real SSA `managedFields` (fieldManager `flux-drift-webhook`)
-- live discovery rules built from the apiserver
-- the `admissionregistration.k8s.io` group is excluded
+- the single wildcard rule survives the apiserver round-trip with `Scope: "*"` intact
 - apiserver defaulting of the VWC
 - the `ConfigUpdated` Event is emitted
 - `ForceOwnership` idempotency (repeated Applies are stable)
+- CEL `matchConditions` **compile and are accepted by the apiserver** — the only place this is checked, since the apiserver compiles the expressions on write and the unit tests run against a fake client that stores any string; plus their idempotency across repeated Applies
 
 > **Note:** `setup-envtest` fetches the kube-apiserver/etcd binary assets from an external GitHub index (not GOPROXY); GitHub-hosted runners have the network access to fetch them, so the CI job is a **required automatic gate**. Fallbacks in restricted networks: pre-seed the assets (`ENVTEST_INSTALLED_ONLY=1`) or point `--index` at a mirror.
 
@@ -339,13 +345,22 @@ Run against a live cluster with the webhook in audit-only mode (`make test-webho
 | T9 | `allowed_no_flux_managed_fields` (UPDATE data only) | No audit warning |
 | T10 | `allowed_namespace_terminating` (cascade deletes during ns teardown) | No would-deny in webhook logs |
 | T11 | `denied_delete_flux_managed` (DELETE of a Flux-applied Namespace, Scope `*`) | Audit warning present |
-| T12 | Readiness gated on informer cache sync | T12a `/readyz?verbose` reports `[+]cache-sync ok` in steady state; T12b after revoking `list/watch` on namespaces (keeping `get`) a `rollout restart` must **not** complete within `READY_GATE_WINDOW` (default 60s); T12c the stuck pod reports `[+]webhook-server ok` **and** `[-]cache-sync failed` — the exact gap the gate closes; T12d restoring the ClusterRole unblocks the rollout |
+| T12 | Readiness gated on informer cache sync | T12a `/readyz?verbose` reports `[+]cache-sync ok` in steady state; T12b after revoking `list/watch` on namespaces (keeping `get`), **one pod is deleted** and its replacement must stay not-Ready for `READY_GATE_SECONDS` (default 45); T12c that pod reports `[+]webhook-server ok` **and** `[-]cache-sync failed` — the exact gap the gate closes; T12d restoring the verbs lets it become Ready |
 
-> T12 reads `/readyz?verbose` over a `kubectl port-forward` (the image is distroless — no shell to exec into — and the e2e cluster is assumed to have no internet, so no curl sidecar image). It needs `curl` on the *host* and skips itself with a log if absent. It temporarily patches `ClusterRole/flux-drift-webhook`; the backup is restored both inline and from the `EXIT` trap, so an interrupted run never leaves the cluster with crippled RBAC. Existing replicas keep serving throughout (`minReplicas: 3`, PDB `minAvailable: 1`).
+> T12 reads `/readyz?verbose` over a `kubectl port-forward` (the image is distroless — no shell to exec into — and the e2e cluster is assumed to have no internet, so no curl sidecar image). It needs `curl` on the *host* and skips itself with a log if absent. It temporarily revokes `list/watch` on namespaces; the original verbs are patched back both inline and from the `EXIT` trap, so an interrupted run never leaves the cluster with crippled RBAC.
+>
+> It deletes **one pod** rather than doing a `rollout restart`: each pod requests 2 CPU, so on a single-node kind cluster a surge pod simply stays `Pending`. The rollout would then stall for lack of capacity — the assertion would pass without proving anything about readiness, and the `Pending` pod carries no `Ready` condition at all for T12c to probe.
 
 ### E2E tests (`e2e/run-e2e.sh`)
 
-Full end-to-end: creates a kind cluster, installs cert-manager, deploys the webhook, then runs the integration tests above (`make test-e2e`). Requires a local cert-manager manifest at `e2e/cert-manager.yaml`.
+Full end-to-end: creates a kind cluster, installs cert-manager and the Prometheus Operator `PodMonitor` CRD (`deploy/base` ships a PodMonitor, so the overlay does not apply without it), deploys the webhook, then runs the integration tests above (`make test-e2e`).
+
+Two manifests must be vendored locally first — both are gitignored, and the script prints the download command when one is missing:
+
+- `e2e/cert-manager.yaml`
+- `e2e/podmonitor-crd.yaml`
+
+**Resource requirement:** the dev overlay requests 2 CPU per pod and the HPA sets `minReplicas: 3`, so the kind node needs ~7 CPU free. Below that the pods stay `Pending` and the suite times out waiting for the deployment.
 
 ## CI/CD Pipeline
 

@@ -42,9 +42,14 @@ const (
 
 	FluxNamespaceDefault = "flux-system"
 
-	DefaultDiscoveryInterval = 5 * time.Minute
+	// DefaultVWCResyncInterval is how often the ValidatingWebhookConfiguration
+	// is re-applied. The rules are static, so this only re-asserts ownership
+	// after an out-of-band edit (Update events are filtered to avoid a loop
+	// with cert-manager-cainjector).
+	DefaultVWCResyncInterval = 5 * time.Minute
 
-	// Excluded to avoid infinite loops with our own VWC
+	// Excluded from the webhook rules (CEL matchConditions) and refused by the
+	// handler, so the webhook can never guard its own configuration.
 	ExcludedGroupAdmission = "admissionregistration.k8s.io"
 )
 

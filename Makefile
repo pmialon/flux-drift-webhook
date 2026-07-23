@@ -111,7 +111,6 @@ verify-structure:
 	@test -d internal/config || (echo "ERROR: internal/config not found" && exit 1)
 	@test -d internal/webhook || (echo "ERROR: internal/webhook not found" && exit 1)
 	@test -d internal/metrics || (echo "ERROR: internal/metrics not found" && exit 1)
-	@test -d internal/discovery || (echo "ERROR: internal/discovery not found" && exit 1)
 	@test -d internal/controller || (echo "ERROR: internal/controller not found" && exit 1)
 	@test -d deploy/base || (echo "ERROR: deploy/base not found" && exit 1)
 	@test -d deploy/overlays/dev || (echo "ERROR: deploy/overlays/dev not found" && exit 1)

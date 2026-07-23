@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -25,7 +26,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	kuberecorder "k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,17 +33,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/pmialon/flux-drift-webhook/internal/config"
-	"github.com/pmialon/flux-drift-webhook/internal/discovery"
 	"github.com/pmialon/flux-drift-webhook/internal/metrics"
 )
 
 // WebhookConfigReconciler reconciles the ValidatingWebhookConfiguration that
-// selects Flux-managed resources, rebuilding its rules from the dynamically
-// discovered API GroupVersions and applying them via server-side apply.
+// selects Flux-managed resources, applying it via server-side apply.
+//
+// The rules are static: one wildcard rule per webhook entry, with the API-group
+// exclusions carried by CEL matchConditions. Reconciling is therefore only about
+// re-asserting the configuration, not rebuilding it.
 type WebhookConfigReconciler struct {
 	client.Client
-	// Discoverer enumerates the cluster's API GroupVersions.
-	Discoverer *discovery.Discoverer
 	// Metrics records configuration-update outcomes.
 	Metrics *metrics.Metrics
 	// EventRecorder emits Kubernetes Events for configuration-update outcomes.
@@ -58,14 +58,12 @@ type WebhookConfigReconciler struct {
 	WebhookService string
 	// WebhookPath is the admission request path served by the webhook.
 	WebhookPath string
-	// DiscoveryInterval is the requeue interval between discovery refreshes.
-	DiscoveryInterval time.Duration
+	// ResyncInterval is the requeue interval between re-applies.
+	ResyncInterval time.Duration
 }
 
-// Reconcile rebuilds the ValidatingWebhookConfiguration rules from the
-// currently discovered API GroupVersions and applies them via server-side
-// apply. It requeues after DiscoveryInterval on success, and after one minute
-// on discovery failure.
+// Reconcile applies the ValidatingWebhookConfiguration via server-side apply
+// and requeues after ResyncInterval.
 func (r *WebhookConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("webhook", r.WebhookName)
 
@@ -77,15 +75,7 @@ func (r *WebhookConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request)
 		ObjectMeta: metav1.ObjectMeta{Name: r.WebhookName},
 	}
 
-	groupVersions, err := r.Discoverer.DiscoverGroupVersions(ctx)
-	if err != nil {
-		r.Metrics.RecordDiscoveryError()
-		r.event(ref, corev1.EventTypeWarning, "DiscoveryFailed", "GVK discovery failed: %v", err)
-		log.Error(err, "failed to discover GroupVersions")
-		return ctrl.Result{RequeueAfter: time.Minute}, err
-	}
-
-	rules := r.buildRules(groupVersions)
+	rules := wildcardRules()
 
 	// SSA merges by webhook entry name, so they must match the deployed manifest
 	vwc := &admissionregistrationv1.ValidatingWebhookConfiguration{
@@ -124,7 +114,7 @@ func (r *WebhookConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request)
 	r.event(ref, corev1.EventTypeNormal, "ConfigUpdated", "updated ValidatingWebhookConfiguration with %d rules", len(rules))
 	log.V(1).Info("updated ValidatingWebhookConfiguration", "rulesCount", len(rules))
 
-	return ctrl.Result{RequeueAfter: r.DiscoveryInterval}, nil
+	return ctrl.Result{RequeueAfter: r.ResyncInterval}, nil
 }
 
 // buildWebhookEntry assembles one webhook entry scoped by an objectSelector on
@@ -155,7 +145,50 @@ func (r *WebhookConfigReconciler) buildWebhookEntry(
 		},
 		SideEffects:             &sideEffects,
 		AdmissionReviewVersions: []string{"v1"},
+		MatchConditions:         matchConditions(),
 	}
+}
+
+// matchConditions returns the CEL pre-filters carrying the API-group exclusions,
+// one per entry in config.ExcludedGroups.
+//
+// The API server evaluates matchConditions after the rules, namespaceSelector
+// and objectSelector, so these only run for objects already carrying a Flux
+// ownership label — the cost is negligible and the exclusion is exact.
+func matchConditions() []admissionregistrationv1.MatchCondition {
+	excluded := config.ExcludedGroups()
+	conditions := make([]admissionregistrationv1.MatchCondition, 0, len(excluded))
+	for _, group := range excluded {
+		conditions = append(conditions, admissionregistrationv1.MatchCondition{
+			Name:       "exclude-" + group,
+			Expression: fmt.Sprintf("request.resource.group != %q", group),
+		})
+	}
+	return conditions
+}
+
+// wildcardRules returns the single rule the webhook registers: every group,
+// version and resource, at every scope. The API-group exclusions live in the CEL
+// matchConditions instead of in the rule list.
+//
+// This replaced a rule per discovered GroupVersion, refreshed on a timer. A CRD
+// installed at any moment is now covered immediately rather than after up to a
+// refresh interval, and the ValidatingWebhookConfiguration no longer carries a
+// rule list that grows with the cluster's API surface.
+func wildcardRules() []admissionregistrationv1.RuleWithOperations {
+	return []admissionregistrationv1.RuleWithOperations{{
+		Rule: admissionregistrationv1.Rule{
+			APIGroups:   []string{"*"},
+			APIVersions: []string{"*"},
+			Resources:   []string{"*"},
+			Scope:       ptr(admissionregistrationv1.AllScopes),
+		},
+		Operations: []admissionregistrationv1.OperationType{
+			admissionregistrationv1.Create,
+			admissionregistrationv1.Update,
+			admissionregistrationv1.Delete,
+		},
+	}}
 }
 
 // event emits a Kubernetes Event for obj when an EventRecorder is configured.
@@ -167,36 +200,6 @@ func (r *WebhookConfigReconciler) event(obj runtime.Object, eventtype, reason, m
 	}
 }
 
-func (r *WebhookConfigReconciler) buildRules(gvs []schema.GroupVersion) []admissionregistrationv1.RuleWithOperations {
-	rules := make([]admissionregistrationv1.RuleWithOperations, 0, len(gvs))
-
-	for _, gv := range gvs {
-		if gv.Version == "" {
-			continue
-		}
-		rules = append(rules, admissionregistrationv1.RuleWithOperations{
-			Rule: admissionregistrationv1.Rule{
-				APIGroups:   []string{gv.Group},
-				APIVersions: []string{gv.Version},
-				Resources:   []string{"*"},
-				// All scopes: cluster-scoped Flux-managed objects (Namespaces,
-				// CRDs, ClusterRoles, PVs, ...) need drift protection too —
-				// kubectl delete namespace would otherwise be an unguarded
-				// mass-delete primitive. The objectSelector keeps unlabelled
-				// cluster-scoped objects out of the webhook entirely.
-				Scope: ptr(admissionregistrationv1.AllScopes),
-			},
-			Operations: []admissionregistrationv1.OperationType{
-				admissionregistrationv1.Create,
-				admissionregistrationv1.Update,
-				admissionregistrationv1.Delete,
-			},
-		})
-	}
-
-	return rules
-}
-
 // SetupWithManager registers the reconciler with the manager. It watches only
 // the managed ValidatingWebhookConfiguration (by name) and deliberately ignores
 // Update events to avoid a reconcile loop with cert-manager-cainjector.
@@ -205,7 +208,7 @@ func (r *WebhookConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Updates from cert-manager-cainjector (caBundle injection) would
 	// trigger a reconcile loop: APPLY → cainjector PUT → watch fires →
 	// APPLY → ... flooding the API server. Periodic reconciliation via
-	// RequeueAfter (discoveryInterval) is sufficient.
+	// RequeueAfter (ResyncInterval) is sufficient.
 	nameFilter := func(obj client.Object) bool {
 		return obj.GetName() == r.WebhookName
 	}

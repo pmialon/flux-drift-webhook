@@ -69,8 +69,8 @@ spec:
             {{- with .Values.config.webhookName }}
             - --webhook-name={{ . }}
             {{- end }}
-            {{- with .Values.config.discoveryInterval }}
-            - --discovery-interval={{ . }}
+            {{- with (.Values.config.vwcResyncInterval | default .Values.config.discoveryInterval) }}
+            - --vwc-resync-interval={{ . }}
             {{- end }}
             {{- with .Values.config.namespaceLabel }}
             - --namespace-label={{ . }}

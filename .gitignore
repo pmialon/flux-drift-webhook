@@ -4,3 +4,8 @@ coverage.html
 coverage.xml
 output/
 dist/
+
+# Vendored locally by the operator before `make test-e2e` (see e2e/run-e2e.sh);
+# ~1MB and version-specific, so it is not committed.
+e2e/cert-manager.yaml
+e2e/podmonitor-crd.yaml
