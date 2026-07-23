@@ -27,15 +27,18 @@ spec:
             - --log-encoding=json
             - --enable-leader-election=true
           env:
-            # Pin the Go scheduler to the CPU limit (Guaranteed QoS: 2 cores).
-            # Without this the runtime sizes P to the node's core count and
-            # over-subscribes, causing throttling and GC latency spikes.
+            # Without this the runtime sizes P to the NODE's core count, not the
+            # container's share, over-subscribing on a small pod. One P is enough:
+            # admission handling is short bursts of JSON decoding and set algebra,
+            # and there is no CPU limit, so a burst is served at full core speed.
             - name: GOMAXPROCS
-              value: "2"
-            # Soft memory ceiling at ~90% of the 256Mi limit so the GC reclaims
-            # before the kernel OOM-kills the container.
+              value: "1"
+            # Soft ceiling below the 128Mi limit so the GC reclaims instead of the
+            # kernel OOM-killing the container. The headroom (28Mi) covers what
+            # GOMEMLIMIT does not account for — chiefly the mapped binary — since
+            # it only bounds Go-runtime memory (heap, stacks, runtime metadata).
             - name: GOMEMLIMIT
-              value: "230MiB"
+              value: "100MiB"
           ports:
             - name: https
               containerPort: 9443
@@ -51,13 +54,16 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # Burstable QoS. The CPU limit is deliberately omitted: admission is on
+          # the critical path of every write, and CFS throttling would add latency
+          # to requests the API server times out on. Memory is capped because a
+          # runaway cache should be killed, not left to evict the node.
           resources:
             requests:
-              cpu: "2"
-              memory: 256Mi
+              cpu: 25m
+              memory: 64Mi
             limits:
-              cpu: "2"
-              memory: 256Mi
+              memory: 128Mi
           livenessProbe:
             httpGet:
               path: /healthz
