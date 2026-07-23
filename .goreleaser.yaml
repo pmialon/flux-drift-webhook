@@ -46,17 +46,16 @@ sboms:
       - "{{ .ProjectName }}_{{ .Version }}_sbom.spdx.json"
 
 # Sign the checksum file (which covers every released artefact, SBOM included).
+# cosign v3 defaults to --new-bundle-format, which ignores --output-signature /
+# --output-certificate and writes signature + certificate into a single bundle.
 # https://goreleaser.com/customization/sign
 signs:
   - cmd: cosign
-    env:
-      - COSIGN_EXPERIMENTAL=1
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.bundle"
     args:
       - sign-blob
       - "--yes"
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
+      - "--bundle=${signature}"
       - "${artifact}"
     artifacts: checksum
     output: true
