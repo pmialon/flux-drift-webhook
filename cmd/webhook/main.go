@@ -20,11 +20,15 @@ limitations under the License.
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	flag "github.com/spf13/pflag"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,6 +36,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
@@ -211,6 +216,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Gate readiness on the informer caches too. controller-runtime deliberately
+	// starts the webhook server *before* the caches (see the WARNING in
+	// manager/internal.go), so the TLS listener is up — and StartedChecker green —
+	// while every cache-backed lookup still fails. Those lookups are fail-closed,
+	// so without this the pod takes admission traffic during its cold start and
+	// denies legitimate requests: namespace-terminating cascades, CREATEs whose
+	// owner inventory cannot be read, and tenant reconcilers whose service account
+	// cannot be resolved.
+	synced := &cachesSynced{ch: make(chan struct{})}
+	if err := mgr.Add(synced); err != nil {
+		log.Error(err, "unable to register cache sync runnable")
+		os.Exit(1)
+	}
+	if err := mgr.AddReadyzCheck("cache-sync", synced.Check); err != nil {
+		log.Error(err, "unable to register cache sync readiness check")
+		os.Exit(1)
+	}
+
+	warmInformerCaches(mgr, log)
+
 	log.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Error(err, "manager exited with error")
@@ -218,6 +243,65 @@ func main() {
 	}
 
 	log.Info("shutdown complete")
+}
+
+// cachesSynced reports whether the manager's informer caches have completed
+// their initial sync. controller-runtime starts the "Others" runnable group only
+// after runnables.Caches.Start has waited for that sync, so Start being called is
+// the signal.
+//
+// NeedLeaderElection must report false: a bare Runnable falls through to the
+// leader-election group, which with --enable-leader-election (the deploy
+// overlays set it) would leave every non-leader replica permanently unready.
+type cachesSynced struct {
+	ch chan struct{}
+}
+
+func (c *cachesSynced) Start(ctx context.Context) error {
+	close(c.ch)
+	<-ctx.Done()
+	return nil
+}
+
+func (c *cachesSynced) NeedLeaderElection() bool { return false }
+
+// Check is the readyz checker backed by the signal above.
+func (c *cachesSynced) Check(_ *http.Request) error {
+	select {
+	case <-c.ch:
+		return nil
+	default:
+		return errors.New("informer caches have not completed their initial sync")
+	}
+}
+
+// warmInformerCaches registers the informers the admission handler reads from
+// before the manager starts. Informers registered at this point are covered by
+// the manager's initial cache sync, so by the time readiness flips the lookups
+// are served from a warm cache. Left to itself the cache creates each informer
+// lazily, on the first request that needs it, which pays the list+watch inline.
+//
+// Registration is cheap and non-blocking here: cache.GetInformer only waits for
+// a sync once the cache is running, which it is not before mgr.Start.
+//
+// A type that cannot be resolved — CRD absent, e.g. a cluster running
+// kustomize-controller but not helm-controller — is skipped with a warning
+// rather than being fatal. The handler already tolerates an unreadable owner,
+// and refusing to start would make the webhook unusable on such clusters.
+func warmInformerCaches(mgr ctrl.Manager, log logr.Logger) {
+	for _, obj := range webhookhandler.CachedObjectTypes() {
+		name := fmt.Sprintf("%T", obj)
+		if gvk, err := apiutil.GVKForObject(obj, mgr.GetScheme()); err == nil {
+			name = gvk.String()
+		}
+		if _, err := mgr.GetCache().GetInformer(context.Background(), obj); err != nil {
+			log.Info("skipping informer pre-warm; this type is not cached, so the checks "+
+				"that read it stay fail-closed until its first use syncs it",
+				"type", name, "error", err.Error())
+			continue
+		}
+		log.V(1).Info("informer registered for initial cache sync", "type", name)
+	}
 }
 
 // mergeSystemControllerSAs returns the built-in default control-plane service

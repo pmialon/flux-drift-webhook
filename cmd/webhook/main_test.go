@@ -17,8 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
 func TestGetEnv(t *testing.T) {
@@ -95,4 +98,54 @@ func TestMergeSystemControllerSAs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCachesSyncedCheck(t *testing.T) {
+	c := &cachesSynced{ch: make(chan struct{})}
+
+	if err := c.Check(nil); err == nil {
+		t.Fatal("Check() returned nil before the caches synced, want an error so readyz stays red")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx) }()
+
+	// Start closes the channel immediately; poll rather than sleep so the test
+	// does not depend on goroutine scheduling.
+	deadline := time.After(5 * time.Second)
+	for {
+		if err := c.Check(nil); err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("Check() never returned nil after Start()")
+		default:
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Start() returned %v, want nil on context cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start() did not return after its context was cancelled")
+	}
+}
+
+// TestCachesSyncedNeedLeaderElection guards a trap: controller-runtime's
+// runnables.Add sends a Runnable that does not implement LeaderElectionRunnable
+// to the leader-election group. The deploy overlays enable leader election, so
+// were this to report true, every non-leader replica would block on the readyz
+// check forever and the Deployment would never roll out.
+func TestCachesSyncedNeedLeaderElection(t *testing.T) {
+	c := &cachesSynced{ch: make(chan struct{})}
+	if c.NeedLeaderElection() {
+		t.Error("NeedLeaderElection() = true, want false so the runnable starts on every replica")
+	}
+	var _ manager.LeaderElectionRunnable = c
+	var _ manager.Runnable = c
 }

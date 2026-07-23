@@ -351,6 +351,31 @@ func ownerGVK(managedBy string) (schema.GroupVersionKind, bool) {
 	}
 }
 
+// CachedObjectTypes returns every object the handler reads through the
+// controller-runtime cache: namespaces (namespaceIsTerminating and the
+// --namespace-label filter) and the owning Kustomization/HelmRelease (getOwner,
+// for multi-tenant service-account resolution, the CREATE inventory veto and
+// the .spec.ignore waiver).
+//
+// The manager pre-warms these informers at startup. Kept next to ownerGVK so the
+// pre-warm list cannot silently drift from what the handler actually reads —
+// a type missing here is created lazily by the first request that needs it,
+// which pays the list+watch inline and, since every cache-backed check is
+// fail-closed, gets denied while it completes.
+func CachedObjectTypes() []client.Object {
+	objs := []client.Object{&corev1.Namespace{}}
+	for _, managedBy := range []string{ManagedByKustomization, ManagedByHelmRelease} {
+		gvk, ok := ownerGVK(managedBy)
+		if !ok {
+			continue
+		}
+		owner := &unstructured.Unstructured{}
+		owner.SetGroupVersionKind(gvk)
+		objs = append(objs, owner)
+	}
+	return objs
+}
+
 func (h *DriftPreventionHandler) checkBypassAnnotation(
 	req admission.Request, objMeta, oldObjMeta metav1.ObjectMeta,
 ) (decisionResult, bool) {
