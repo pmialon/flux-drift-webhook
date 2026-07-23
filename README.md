@@ -16,7 +16,8 @@ Inspired by [Google Config Sync's drift prevention](https://cloud.google.com/ant
 - **Automatic Protection** — Detects Flux-managed resources via labels and prevents unauthorised modifications
 - **Field-Level Protection** — Uses Server-Side Apply (SSA) `managedFields` to allow controllers like HPA/VPA/KEDA to modify fields they own
 - **Dynamic Discovery** — Automatically discovers all Kubernetes API GroupVersions and updates webhook rules (Scope `*`: cluster-scoped Flux-managed objects — Namespaces, CRDs, ClusterRoles — are protected too; delete a Flux-managed namespace by removing it from Git)
-- **Audit Mode** — Log-only mode for testing before enforcement
+- **Audit Mode** — Log-only mode for testing before enforcement; would-be denials are still counted in the metrics, so problems are observable from day one
+- **Ownership Conflict Detection** — Surfaces resources declared by two different Kustomizations/HelmReleases under the same name and namespace — a common source of incidents at GitOps scale, where the two reconcilers silently overwrite each other. Every ownership flip is counted in `flux_drift_webhook_ownership_conflicts_total{kind, previous_owner, new_owner}`, naming both culprits. In audit mode nothing is blocked, so the misconfiguration becomes visible without disrupting either reconciler
 - **Inheritance-Aware** — Ignores derived objects (e.g. `Endpoints`/`EndpointSlice`/`CertificateRequest`) that merely inherit a parent's Flux labels, so control-plane controllers and the garbage collector are never blocked
 - **Bypass Mechanisms** — Annotation-based bypass for emergencies and exceptions
 
