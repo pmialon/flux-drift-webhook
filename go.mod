@@ -3,7 +3,7 @@ module github.com/pmialon/flux-drift-webhook
 go 1.26.0
 
 require (
-	github.com/fluxcd/pkg/runtime v0.110.1
+	github.com/fluxcd/pkg/runtime v0.111.0
 	github.com/go-logr/logr v1.4.3
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
@@ -21,7 +21,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
-	github.com/fluxcd/pkg/apis/event v0.27.1 // indirect
+	github.com/fluxcd/pkg/apis/event v0.28.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
