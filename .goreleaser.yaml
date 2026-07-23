@@ -7,6 +7,10 @@ project_name: flux-drift-webhook
 builds:
   - skip: true
 
+# NOTE on templates: the image is pushed by docker/metadata-action with
+# `type=semver,pattern={{version}}`, which strips the leading "v" — the tag is
+# 0.1.0, not v0.1.0. Use GoReleaser's .Version (also stripped) rather than .Tag
+# (the raw git ref) anywhere an image reference is rendered.
 release:
   extra_files:
     - glob: output/*.yaml
@@ -14,7 +18,7 @@ release:
   footer: |
     ## Container image
 
-    - `ghcr.io/pmialon/flux-drift-webhook:{{ .Tag }}`
+    - `ghcr.io/pmialon/flux-drift-webhook:{{ .Version }}`
 
     Supported architectures: `linux/amd64`, `linux/arm64`.
 
@@ -25,7 +29,7 @@ release:
     cosign verify \
       --certificate-identity-regexp "^https://github.com/pmialon/flux-drift-webhook/.github/workflows/release.yaml@.*" \
       --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-      ghcr.io/pmialon/flux-drift-webhook:{{ .Tag }}
+      ghcr.io/pmialon/flux-drift-webhook:{{ .Version }}
     ```
 
 changelog:
