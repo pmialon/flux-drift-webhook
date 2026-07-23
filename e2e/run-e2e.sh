@@ -10,8 +10,8 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-flux-drift-webhook-e2e}"
 WEBHOOK_IMAGE="${WEBHOOK_IMAGE:-flux-drift-webhook:e2e}"
 TIMEOUT="${TIMEOUT:-120s}"
-# Third-party manifests must be available locally (works offline, no cluster
-# internet needed). Both are gitignored — vendor them once before running.
+# Third-party manifests, vendored under e2e/ and committed so this script runs
+# offline straight after a clone. Bump them with `make e2e-vendor`.
 CERT_MANAGER_MANIFEST="${CERT_MANAGER_MANIFEST:-${SCRIPT_DIR}/cert-manager.yaml}"
 # deploy/base ships a PodMonitor, so the Prometheus Operator CRD must exist or
 # the whole overlay fails to apply.
@@ -41,7 +41,7 @@ kind load docker-image "${WEBHOOK_IMAGE}" --name "${KIND_CLUSTER_NAME}"
 log "Installing cert-manager..."
 if [[ ! -f "${CERT_MANAGER_MANIFEST}" ]]; then
     log "ERROR: cert-manager manifest not found at ${CERT_MANAGER_MANIFEST}"
-    log "Download it first: curl -Lo e2e/cert-manager.yaml https://github.com/cert-manager/cert-manager/releases/download/v1.14.0/cert-manager.yaml"
+    log "It is committed under e2e/; restore it with 'make e2e-vendor'"
     exit 1
 fi
 kubectl apply -f "${CERT_MANAGER_MANIFEST}"
@@ -52,7 +52,7 @@ kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-m
 log "Installing the PodMonitor CRD..."
 if [[ ! -f "${PODMONITOR_CRD}" ]]; then
     log "ERROR: PodMonitor CRD not found at ${PODMONITOR_CRD}"
-    log "Download it first: curl -Lo e2e/podmonitor-crd.yaml https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.92.1/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml"
+    log "It is committed under e2e/; restore it with 'make e2e-vendor'"
     exit 1
 fi
 # --server-side: the CRD exceeds the annotation size limit of client-side apply.

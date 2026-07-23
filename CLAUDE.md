@@ -75,6 +75,10 @@ make test-integration
 # Run full E2E tests (kind cluster + deploy + integration tests)
 make test-e2e
 
+# Re-download the vendored e2e manifests at the pinned versions (they are
+# committed, so this is only needed when bumping cert-manager / prometheus-operator)
+make e2e-vendor
+
 # Smoke-test every native Go fuzz target (each runs for FUZZ_TIME, default 20s)
 make fuzz-smoketest
 
@@ -349,18 +353,20 @@ Run against a live cluster with the webhook in audit-only mode (`make test-webho
 
 > T12 reads `/readyz?verbose` over a `kubectl port-forward` (the image is distroless — no shell to exec into — and the e2e cluster is assumed to have no internet, so no curl sidecar image). It needs `curl` on the *host* and skips itself with a log if absent. It temporarily revokes `list/watch` on namespaces; the original verbs are patched back both inline and from the `EXIT` trap, so an interrupted run never leaves the cluster with crippled RBAC.
 >
-> It deletes **one pod** rather than doing a `rollout restart`: each pod requests 2 CPU, so on a single-node kind cluster a surge pod simply stays `Pending`. The rollout would then stall for lack of capacity — the assertion would pass without proving anything about readiness, and the `Pending` pod carries no `Ready` condition at all for T12c to probe.
+> It deletes **one pod** rather than doing a `rollout restart`, so the replica count stays constant and the assertion never depends on the node having spare capacity for a surge pod. That mattered concretely: when pods requested 2 CPU, the surge pod stayed `Pending`, the rollout stalled for lack of capacity rather than for lack of readiness, and a `Pending` pod carries no `Ready` condition at all for T12c to probe — so the test passed while proving nothing. Requests are 25m now, but the failure mode is worth not re-introducing.
 
 ### E2E tests (`e2e/run-e2e.sh`)
 
 Full end-to-end: creates a kind cluster, installs cert-manager and the Prometheus Operator `PodMonitor` CRD (`deploy/base` ships a PodMonitor, so the overlay does not apply without it), deploys the webhook, then runs the integration tests above (`make test-e2e`).
 
-Two manifests must be vendored locally first — both are gitignored, and the script prints the download command when one is missing:
+Two third-party manifests are **committed** under `e2e/` so the suite runs offline straight after a clone, with no manual setup:
 
-- `e2e/cert-manager.yaml`
-- `e2e/podmonitor-crd.yaml`
+- `e2e/cert-manager.yaml` (cert-manager, pinned by `CERT_MANAGER_VERSION`)
+- `e2e/podmonitor-crd.yaml` (PodMonitor CRD, pinned by `PROMETHEUS_OPERATOR_VERSION`)
 
-**Resource requirement:** the dev overlay requests 2 CPU per pod and the HPA sets `minReplicas: 3`, so the kind node needs ~7 CPU free. Below that the pods stay `Pending` and the suite times out waiting for the deployment.
+`make e2e-vendor` re-downloads both at the versions pinned in the Makefile — only needed when bumping one. They cost ~107 KiB compressed, which buys a `make test-e2e` that works on a fresh clone with no network access to the cluster.
+
+**Resource requirement:** modest since the resources were right-sized — 3 replicas × 25m CPU / 64Mi. cert-manager is the heavier part of the cluster.
 
 ## CI/CD Pipeline
 
