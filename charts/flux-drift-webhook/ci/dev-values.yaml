@@ -1,0 +1,3 @@
+# Dev environment overrides — mirrors deploy/overlays/dev (audit-only mode).
+config:
+  auditOnly: true

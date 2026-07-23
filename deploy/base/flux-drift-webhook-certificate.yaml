@@ -1,0 +1,22 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: flux-drift-webhook-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: flux-drift-webhook
+spec:
+  secretName: flux-drift-webhook-tls
+  dnsNames:
+    - flux-drift-webhook.flux-system.svc
+    - flux-drift-webhook.flux-system.svc.cluster.local
+  issuerRef:
+    name: flux-drift-webhook-issuer
+    kind: Issuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256

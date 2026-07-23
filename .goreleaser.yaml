@@ -1,0 +1,62 @@
+version: 2
+
+project_name: flux-drift-webhook
+
+# The container image is built and pushed by the release workflow (Docker Buildx),
+# not by GoReleaser.
+builds:
+  - skip: true
+
+release:
+  extra_files:
+    - glob: output/*.yaml
+  prerelease: auto
+  footer: |
+    ## Container image
+
+    - `ghcr.io/pmialon/flux-drift-webhook:{{ .Tag }}`
+
+    Supported architectures: `linux/amd64`, `linux/arm64`.
+
+    The image is built on a GitHub-hosted runner and signed with cosign (keyless, GitHub OIDC),
+    with an SBOM and SLSA provenance attached. Verify it with:
+
+    ```
+    cosign verify \
+      --certificate-identity-regexp "^https://github.com/pmialon/flux-drift-webhook/.github/workflows/release.yaml@.*" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      ghcr.io/pmialon/flux-drift-webhook:{{ .Tag }}
+    ```
+
+changelog:
+  use: github-native
+
+checksum:
+  extra_files:
+    - glob: output/*.yaml
+
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}_{{ .Version }}_source_code"
+
+sboms:
+  - id: source
+    artifacts: source
+    documents:
+      - "{{ .ProjectName }}_{{ .Version }}_sbom.spdx.json"
+
+# Sign the checksum file (which covers every released artefact, SBOM included).
+# https://goreleaser.com/customization/sign
+signs:
+  - cmd: cosign
+    env:
+      - COSIGN_EXPERIMENTAL=1
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true

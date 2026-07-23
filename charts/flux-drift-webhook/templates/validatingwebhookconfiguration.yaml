@@ -1,0 +1,71 @@
+{{- if and (not .Values.certManager.enabled) (not .Values.tls.caBundle) -}}
+{{- fail "certManager.enabled=false requires tls.caBundle (and tls.secretName) to be set" -}}
+{{- end -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  # The controller reconciles the VWC by this exact name (its --webhook-name).
+  name: {{ include "flux-drift-webhook.webhookName" . }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+  {{- if .Values.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "flux-drift-webhook.certName" . }}
+  {{- end }}
+# Two entries express the OR a single objectSelector cannot: the API server
+# only forwards requests for objects carrying a Flux ownership label
+# (Kustomization or HelmRelease). The selector matches the old OR the new
+# object on UPDATE/DELETE, so label stripping cannot dodge interception.
+webhooks:
+  - name: kustomize.{{ include "flux-drift-webhook.webhookName" . }}
+    clientConfig:
+      service:
+        name: {{ include "flux-drift-webhook.serviceName" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate
+        port: {{ .Values.service.port }}
+      {{- if not .Values.certManager.enabled }}
+      caBundle: {{ .Values.tls.caBundle }}
+      {{- end }}
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-public", "kube-node-lease", {{ .Release.Namespace | quote }}]
+    objectSelector:
+      matchExpressions:
+        - key: kustomize.toolkit.fluxcd.io/name
+          operator: Exists
+    # Dynamically populated by the controller via server-side apply.
+    rules: []
+    failurePolicy: Ignore
+    timeoutSeconds: 3
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    matchPolicy: Equivalent
+  - name: helm.{{ include "flux-drift-webhook.webhookName" . }}
+    clientConfig:
+      service:
+        name: {{ include "flux-drift-webhook.serviceName" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate
+        port: {{ .Values.service.port }}
+      {{- if not .Values.certManager.enabled }}
+      caBundle: {{ .Values.tls.caBundle }}
+      {{- end }}
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-public", "kube-node-lease", {{ .Release.Namespace | quote }}]
+    objectSelector:
+      matchExpressions:
+        - key: helm.toolkit.fluxcd.io/name
+          operator: Exists
+    # Dynamically populated by the controller via server-side apply.
+    rules: []
+    failurePolicy: Ignore
+    timeoutSeconds: 3
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    matchPolicy: Equivalent

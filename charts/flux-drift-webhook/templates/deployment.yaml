@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "flux-drift-webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "flux-drift-webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flux-drift-webhook.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "flux-drift-webhook.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: webhook
+          image: {{ include "flux-drift-webhook.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --webhook-port={{ .Values.ports.webhook }}
+            - --metrics-bind-addr=:{{ .Values.ports.metrics }}
+            - --health-probe-bind-addr=:{{ .Values.ports.health }}
+            - --cert-dir={{ .Values.config.certDir }}
+            - --log-encoding={{ .Values.config.logEncoding }}
+            - --enable-leader-election={{ .Values.config.leaderElection.enabled }}
+            {{- if .Values.config.auditOnly }}
+            - --audit-only=true
+            {{- end }}
+            {{- with .Values.config.logLevel }}
+            - --log-level={{ . }}
+            {{- end }}
+            {{- with .Values.config.leaderElection.leaseDuration }}
+            - --leader-election-lease-duration={{ . }}
+            {{- end }}
+            {{- with .Values.config.leaderElection.renewDeadline }}
+            - --leader-election-renew-deadline={{ . }}
+            {{- end }}
+            {{- with .Values.config.leaderElection.retryPeriod }}
+            - --leader-election-retry-period={{ . }}
+            {{- end }}
+            {{- with .Values.config.kubeApiQps }}
+            - --kube-api-qps={{ . }}
+            {{- end }}
+            {{- with .Values.config.kubeApiBurst }}
+            - --kube-api-burst={{ . }}
+            {{- end }}
+            {{- if or .Values.config.fluxNamespace (ne .Release.Namespace "flux-system") }}
+            - --flux-namespace={{ default .Release.Namespace .Values.config.fluxNamespace }}
+            {{- end }}
+            {{- with .Values.config.webhookName }}
+            - --webhook-name={{ . }}
+            {{- end }}
+            {{- with .Values.config.discoveryInterval }}
+            - --discovery-interval={{ . }}
+            {{- end }}
+            {{- with .Values.config.namespaceLabel }}
+            - --namespace-label={{ . }}
+            {{- end }}
+            {{- with .Values.config.namespaceLabelValue }}
+            - --namespace-label-value={{ . }}
+            {{- end }}
+            {{- with .Values.config.namespaceFetchTimeout }}
+            - --namespace-fetch-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.config.systemControllerSas }}
+            - --system-controller-sas={{ . }}
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: GOMAXPROCS
+              value: {{ .Values.runtime.gomaxprocs | quote }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.runtime.gomemlimit | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.ports.webhook }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.ports.metrics }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.ports.health }}
+              protocol: TCP
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+          volumeMounts:
+            - name: certs
+              mountPath: {{ .Values.config.certDir }}
+              readOnly: true
+      volumes:
+        - name: certs
+          secret:
+            secretName: {{ include "flux-drift-webhook.tlsSecretName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "flux-drift-webhook.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+        {{- end }}

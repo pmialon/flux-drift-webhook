@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: flux-drift-webhook
+spec:
+  ports:
+    - name: https
+      port: 443
+      targetPort: 9443
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: flux-drift-webhook

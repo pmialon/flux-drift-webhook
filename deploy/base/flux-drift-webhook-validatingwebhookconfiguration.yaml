@@ -1,0 +1,55 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: flux-drift-webhook.fluxcd.io
+  annotations:
+    cert-manager.io/inject-ca-from: flux-system/flux-drift-webhook
+# Two entries express the OR a single objectSelector cannot: the API server
+# only forwards requests for objects carrying a Flux ownership label
+# (Kustomization or HelmRelease). The selector matches the old OR the new
+# object on UPDATE/DELETE, so label stripping cannot dodge interception.
+webhooks:
+  - name: kustomize.flux-drift-webhook.fluxcd.io
+    clientConfig:
+      service:
+        name: flux-drift-webhook
+        namespace: flux-system
+        path: /validate
+        port: 443
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-public", "kube-node-lease", "flux-system"]
+    objectSelector:
+      matchExpressions:
+        - key: kustomize.toolkit.fluxcd.io/name
+          operator: Exists
+    rules: []  # Dynamically populated by the controller
+    failurePolicy: Ignore
+    timeoutSeconds: 3
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    matchPolicy: Equivalent
+  - name: helm.flux-drift-webhook.fluxcd.io
+    clientConfig:
+      service:
+        name: flux-drift-webhook
+        namespace: flux-system
+        path: /validate
+        port: 443
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-public", "kube-node-lease", "flux-system"]
+    objectSelector:
+      matchExpressions:
+        - key: helm.toolkit.fluxcd.io/name
+          operator: Exists
+    rules: []  # Dynamically populated by the controller
+    failurePolicy: Ignore
+    timeoutSeconds: 3
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    matchPolicy: Equivalent

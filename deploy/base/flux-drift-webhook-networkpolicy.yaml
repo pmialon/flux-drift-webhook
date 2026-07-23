@@ -1,0 +1,15 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flux-drift-webhook
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: flux-drift-webhook
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow API server to reach webhook port (admission requests)
+    - ports:
+        - port: 9443
+          protocol: TCP

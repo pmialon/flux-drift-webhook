@@ -1,0 +1,82 @@
+version: "2"
+
+linters:
+  # Aligned with the FluxCD community linter set (see cli-utils/.golangci.yml).
+  # default:none + an explicit, sorted enable list for determinism.
+  default: none
+  enable:
+    - dupl
+    - errcheck
+    - errorlint
+    - goconst
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - nolintlint
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+  settings:
+    dupl:
+      threshold: 400
+    goconst:
+      # Test files legitimately repeat fixture strings; constants in tests hurt
+      # readability more than they help.
+      ignore-tests: true
+    gocyclo:
+      min-complexity: 40
+    lll:
+      line-length: 170
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    gosec:
+      excludes:
+        - G101
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Mirror cli-utils: revive's unused-parameter is noisy for interface
+      # implementations (e.g. Reconcile's request arg), and its package-name
+      # rules conflict with our conventional short package names.
+      - linters: [revive]
+        text: 'unused-parameter:'
+      - linters: [revive]
+        text: 'var-naming: avoid package names that conflict with Go standard library package names'
+      - linters: [revive]
+        text: 'var-naming: avoid meaningless package names'
+      # Gomega/Ginkgo dot-imports are the idiomatic style in test files.
+      - linters: [revive]
+        text: 'dot-imports'
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+
+run:
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

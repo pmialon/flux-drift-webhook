@@ -1,0 +1,13 @@
+# Patterns to ignore when building Helm packages.
+.DS_Store
+.git/
+.gitignore
+.idea/
+*.tmproj
+*.swp
+*.bak
+*.tmp
+*~
+# Repo docs and CI helpers are not part of the packaged chart.
+*.md
+ci/

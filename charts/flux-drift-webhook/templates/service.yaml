@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "flux-drift-webhook.serviceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: https
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.ports.webhook }}
+      protocol: TCP
+  selector:
+    {{- include "flux-drift-webhook.selectorLabels" . | nindent 4 }}

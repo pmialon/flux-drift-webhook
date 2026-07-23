@@ -1,0 +1,186 @@
+# Default values for flux-drift-webhook.
+# This chart mirrors the Kustomize base in deploy/base — every default below is
+# the real production value. Install into the Flux namespace, e.g.:
+#   helm install flux-drift-webhook oci://ghcr.io/pmialon/charts/flux-drift-webhook \
+#     --version <x.y.z> -n flux-system --create-namespace
+
+# -- Replicas. IGNORED when autoscaling.enabled=true (the HPA owns the count).
+replicaCount: 3
+
+image:
+  repository: ghcr.io/pmialon/flux-drift-webhook
+  pullPolicy: IfNotPresent
+  # tag defaults to .Chart.AppVersion when empty.
+  tag: ""
+  # digest, when set (e.g. "sha256:..."), pins the image by digest and wins over tag.
+  digest: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# -- The ClusterRole rules are fixed (the controller needs exactly these); only
+# creation is toggleable.
+rbac:
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+
+# Pod-level security context (matches deploy/base).
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context (matches deploy/base).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  # Service port (the API server connects here); targetPort is ports.webhook.
+  port: 443
+  # -- Service name. PINNED to the controller's hard-coded WebhookService
+  # ("flux-drift-webhook"); changing it breaks the webhook unless the controller
+  # is rebuilt. Defaults to the chart name.
+  name: ""
+
+# Container/flag ports.
+ports:
+  webhook: 9443   # --webhook-port, Service targetPort, NetworkPolicy ingress
+  metrics: 8080   # --metrics-bind-addr :8080, PodMonitor port "metrics"
+  health: 8081    # --health-probe-bind-addr :8081
+
+# Guaranteed QoS (requests == limits), matching deploy/base.
+resources:
+  requests:
+    cpu: "2"
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 256Mi
+
+# -- Go runtime tuning, coupled to resources (GOMAXPROCS=cpu limit; GOMEMLIMIT
+# ~90% of the memory limit). Update together with resources.
+runtime:
+  gomaxprocs: "2"
+  gomemlimit: "230MiB"
+
+livenessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 20
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+nodeSelector: {}
+tolerations: []
+# -- Affinity. When empty, the chart renders the base preferred podAntiAffinity
+# (spread replicas across hosts); set to override entirely.
+affinity: {}
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 9
+  # CPU-only by design: admission is CPU-bound; memory is flat (controller-runtime
+  # caches) and intentionally excluded.
+  targetCPUUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+
+podMonitor:
+  enabled: true
+  interval: 30s
+  path: /metrics
+  # Extra labels for the Prometheus Operator's PodMonitor selector (e.g. release: kube-prometheus-stack).
+  additionalLabels: {}
+
+# cert-manager integration (TLS for the webhook server).
+certManager:
+  enabled: true
+  issuer:
+    # When create=true, a self-signed Issuer is rendered; set false to reference
+    # an existing issuer via name/kind.
+    create: true
+    name: ""
+    kind: Issuer
+  certificate:
+    secretName: ""   # defaults to "<fullname>-tls"
+    privateKey:
+      algorithm: ECDSA
+      size: 256
+
+# When certManager.enabled=false you MUST provide both: an externally-managed TLS
+# secret mounted at config.certDir, and the CA bundle injected into the webhook.
+tls:
+  secretName: ""
+  caBundle: ""
+
+# Webhook application configuration (maps 1:1 to the binary flags). Leave a value
+# empty to fall back to the binary default (the flag is then not emitted).
+config:
+  certDir: /certs
+  # auditOnly=false is enforce mode (the production default). dev/prod opt in to
+  # audit via their own values (see ci/dev-values.yaml).
+  auditOnly: false
+  logEncoding: json     # json | console
+  logLevel: ""          # trace | debug | info | error (empty => binary default "info")
+  leaderElection:
+    enabled: true
+    leaseDuration: ""   # e.g. "35s" (empty => binary default)
+    renewDeadline: ""   # e.g. "30s"
+    retryPeriod: ""     # e.g. "5s"
+  kubeApiQps: ""        # e.g. "50"
+  kubeApiBurst: ""      # e.g. "300"
+  # fluxNamespace: where the webhook runs (controller leader-election lease +
+  # webhook Service lookup). Empty defaults to the release namespace; the
+  # --flux-namespace flag is emitted only when that is not "flux-system" (the
+  # binary default), so a flux-system install stays identical to deploy/base.
+  fluxNamespace: ""
+  webhookName: ""       # VWC name; empty => "flux-drift-webhook.fluxcd.io"
+  discoveryInterval: "" # e.g. "5m"
+  namespaceLabel: ""
+  namespaceLabelValue: ""
+  namespaceFetchTimeout: ""
+  systemControllerSas: ""
+
+# Escape hatches.
+extraArgs: []
+extraEnv: []
+
+# `helm test` connectivity check (TCP probe of the webhook Service port).
+tests:
+  enabled: true
+  image: docker.io/library/busybox:1.37

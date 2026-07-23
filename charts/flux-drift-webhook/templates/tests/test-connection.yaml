@@ -1,0 +1,33 @@
+{{- if .Values.tests.enabled -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "flux-drift-webhook.fullname" . }}-test-connection
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: test
+      image: {{ .Values.tests.image }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      command: ["nc"]
+      # TCP-probe the webhook Service port (a TLS handshake is out of scope here).
+      args:
+        - "-z"
+        - "-w3"
+        - "{{ include "flux-drift-webhook.serviceName" . }}.{{ .Release.Namespace }}.svc"
+        - "{{ .Values.service.port }}"
+{{- end }}

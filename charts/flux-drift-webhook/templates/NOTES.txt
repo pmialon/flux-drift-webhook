@@ -1,0 +1,30 @@
+flux-drift-webhook {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Mode: {{ if .Values.config.auditOnly }}AUDIT-ONLY (logs denials without blocking){{ else }}ENFORCE (blocks manual drift on Flux-managed resources){{ end }}.
+
+{{- if .Values.certManager.enabled }}
+
+TLS is managed by cert-manager (Issuer "{{ include "flux-drift-webhook.issuerName" . }}" +
+Certificate "{{ include "flux-drift-webhook.certName" . }}"). Ensure cert-manager is installed and its
+ca-injector has populated the webhook caBundle.
+{{- else }}
+
+TLS is externally managed: secret "{{ .Values.tls.secretName }}" mounted at {{ .Values.config.certDir }},
+with a static caBundle in the ValidatingWebhookConfiguration.
+{{- end }}
+
+1. Watch the rollout:
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "flux-drift-webhook.fullname" . }}
+
+2. The webhook rules are populated by the controller at runtime (after discovery,
+   ~{{ default "5m" .Values.config.discoveryInterval }}). Verify:
+   kubectl get validatingwebhookconfiguration {{ include "flux-drift-webhook.webhookName" . }} -o yaml
+
+{{- if .Values.tests.enabled }}
+
+3. Run the connectivity test:
+   helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- end }}
+
+NOTE: this Helm chart is an alternative to the Kustomize manifests under deploy/.
+Install it into the Flux namespace (recommended release name "flux-drift-webhook" in "flux-system").

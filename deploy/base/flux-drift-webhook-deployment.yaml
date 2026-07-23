@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flux-drift-webhook
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flux-drift-webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flux-drift-webhook
+    spec:
+      serviceAccountName: flux-drift-webhook
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: webhook
+          image: ghcr.io/pmialon/flux-drift-webhook:latest
+          args:
+            - --webhook-port=9443
+            - --metrics-bind-addr=:8080
+            - --health-probe-bind-addr=:8081
+            - --cert-dir=/certs
+            - --log-encoding=json
+            - --enable-leader-election=true
+          env:
+            # Pin the Go scheduler to the CPU limit (Guaranteed QoS: 2 cores).
+            # Without this the runtime sizes P to the node's core count and
+            # over-subscribes, causing throttling and GC latency spikes.
+            - name: GOMAXPROCS
+              value: "2"
+            # Soft memory ceiling at ~90% of the 256Mi limit so the GC reclaims
+            # before the kernel OOM-kills the container.
+            - name: GOMEMLIMIT
+              value: "230MiB"
+          ports:
+            - name: https
+              containerPort: 9443
+              protocol: TCP
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "2"
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: certs
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: certs
+          secret:
+            secretName: flux-drift-webhook-tls
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: flux-drift-webhook
+                topologyKey: kubernetes.io/hostname
