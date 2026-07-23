@@ -41,7 +41,7 @@
         "enabled": { "type": "boolean" },
         "minReplicas": { "type": "integer", "minimum": 1 },
         "maxReplicas": { "type": "integer", "minimum": 1 },
-        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Percentage of resources.requests.cpu, not of a core. Values above 100 are valid and expected here: with a 25m request and no CPU limit a pod can exceed its request many times over." }
       }
     },
     "podDisruptionBudget": {

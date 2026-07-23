@@ -60,20 +60,24 @@ ports:
   metrics: 8080   # --metrics-bind-addr :8080, PodMonitor port "metrics"
   health: 8081    # --health-probe-bind-addr :8081
 
-# Guaranteed QoS (requests == limits), matching deploy/base.
+# Burstable QoS, matching deploy/base. The CPU limit is deliberately omitted:
+# admission is on the critical path of every write, and CFS throttling would add
+# latency to requests the API server times out on. Memory is capped so a runaway
+# cache is killed rather than left to evict the node.
 resources:
   requests:
-    cpu: "2"
-    memory: 256Mi
+    cpu: 25m
+    memory: 64Mi
   limits:
-    cpu: "2"
-    memory: 256Mi
+    memory: 128Mi
 
-# -- Go runtime tuning, coupled to resources (GOMAXPROCS=cpu limit; GOMEMLIMIT
-# ~90% of the memory limit). Update together with resources.
+# -- Go runtime tuning, coupled to resources. GOMEMLIMIT must stay below
+# resources.limits.memory: it bounds Go-runtime memory only (heap, stacks,
+# runtime metadata), so the gap has to cover what it does not account for,
+# chiefly the mapped binary. Update together with resources.
 runtime:
-  gomaxprocs: "2"
-  gomemlimit: "230MiB"
+  gomaxprocs: "1"
+  gomemlimit: "100MiB"
 
 livenessProbe:
   initialDelaySeconds: 15
@@ -94,7 +98,10 @@ autoscaling:
   maxReplicas: 9
   # CPU-only by design: admission is CPU-bound; memory is flat (controller-runtime
   # caches) and intentionally excluded.
-  targetCPUUtilizationPercentage: 80
+  # Relative to resources.requests.cpu (25m), so this is deliberately >100%:
+  # 1200% = 300m per pod, ~30% of the single core GOMAXPROCS=1 allows. Measured
+  # idle is ~1.2m. Keep in step with resources.requests.cpu.
+  targetCPUUtilizationPercentage: 1200
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300
