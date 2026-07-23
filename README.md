@@ -140,7 +140,8 @@ make docker-push IMG=<your-registry>/flux-drift-webhook:latest
 # Dev environment (audit-only mode)
 make deploy-dev
 
-# Production environment (enforce mode)
+# Production environment (enforce mode — the base default; the overlay adds no
+# --audit-only flag, so denials are enforced rather than merely logged)
 make deploy-prod
 ```
 
@@ -432,7 +433,7 @@ flux-drift-webhook/
 │   ├── base/                # Kustomize base
 │   └── overlays/            # Environment overlays
 │       ├── dev/             # Audit-only mode
-│       └── prod/            # Enforce mode
+│       └── prod/            # Enforce mode (no --audit-only patch)
 └── e2e/                     # E2E tests
 ```
 

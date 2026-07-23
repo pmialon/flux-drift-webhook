@@ -16,6 +16,10 @@ CERT_MANAGER_MANIFEST="${CERT_MANAGER_MANIFEST:-${SCRIPT_DIR}/cert-manager.yaml}
 # deploy/base ships a PodMonitor, so the Prometheus Operator CRD must exist or
 # the whole overlay fails to apply.
 PODMONITOR_CRD="${PODMONITOR_CRD:-${SCRIPT_DIR}/podmonitor-crd.yaml}"
+# Real Flux, so the owner-inventory paths run against genuine Kustomization and
+# HelmRelease CRDs instead of a cluster where they do not exist — without it the
+# CREATE checks can only ever fail closed on an unreadable owner.
+FLUX_INSTALL="${FLUX_INSTALL:-${SCRIPT_DIR}/flux-install.yaml}"
 
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
@@ -36,6 +40,17 @@ kind create cluster --name "${KIND_CLUSTER_NAME}" --wait "${TIMEOUT}"
 log "Building webhook image..."
 docker build -t "${WEBHOOK_IMAGE}" "${ROOT_DIR}"
 kind load docker-image "${WEBHOOK_IMAGE}" --name "${KIND_CLUSTER_NAME}"
+
+# Side-load podinfo so its pods actually run without the cluster reaching a
+# registry. Non-fatal: the enforce tests act on the Deployment object at
+# admission time and do not need the pods to be up.
+PODINFO_IMAGE="${PODINFO_IMAGE:-ghcr.io/stefanprodan/podinfo:6.14.1}"
+log "Side-loading ${PODINFO_IMAGE}..."
+if docker pull -q "${PODINFO_IMAGE}" >/dev/null 2>&1; then
+    kind load docker-image "${PODINFO_IMAGE}" --name "${KIND_CLUSTER_NAME}"
+else
+    log "WARNING: could not pull ${PODINFO_IMAGE}; its pods will not start, which the tests do not require"
+fi
 
 # Install cert-manager (from a local manifest, so no cluster internet access is needed)
 log "Installing cert-manager..."
@@ -59,9 +74,22 @@ fi
 kubectl apply --server-side -f "${PODMONITOR_CRD}"
 kubectl wait --for=condition=Established crd/podmonitors.monitoring.coreos.com --timeout="${TIMEOUT}"
 
+# Install Flux.
+log "Installing Flux..."
+if [[ ! -f "${FLUX_INSTALL}" ]]; then
+    log "ERROR: Flux install manifest not found at ${FLUX_INSTALL}"
+    log "It is committed under e2e/; restore it with 'make e2e-vendor'"
+    exit 1
+fi
+kubectl apply --server-side -f "${FLUX_INSTALL}"
+for crd in kustomizations.kustomize.toolkit.fluxcd.io helmreleases.helm.toolkit.fluxcd.io; do
+    kubectl wait --for=condition=Established "crd/${crd}" --timeout="${TIMEOUT}"
+done
+kubectl wait --for=condition=Available deployment/kustomize-controller -n flux-system --timeout="${TIMEOUT}"
+
 # Create flux-system namespace
-log "Creating flux-system namespace..."
-kubectl create namespace flux-system || true
+log "Ensuring the flux-system namespace exists..."
+kubectl create namespace flux-system 2>/dev/null || true
 
 # Deploy webhook
 log "Deploying webhook..."
@@ -77,8 +105,20 @@ kustomize build deploy/overlays/dev \
 log "Waiting for webhook to be ready..."
 kubectl wait --for=condition=Available deployment/flux-drift-webhook -n flux-system --timeout="${TIMEOUT}"
 
-# Run admission test assertions against the deployed webhook
-log "Running webhook integration tests..."
+# Run admission test assertions against the deployed webhook (audit-only)
+log "Running webhook integration tests (audit mode)..."
 bash "${SCRIPT_DIR}/test-webhook.sh"
+
+# Switch to enforce mode and check that the requests that should be refused
+# actually are. Audit mode never rejects anything, so this is the only phase
+# that proves the webhook blocks rather than merely warns.
+log "Switching the webhook to enforce mode..."
+kustomize build deploy/overlays/prod \
+    | sed -E "s|^([[:space:]]*image: ).*flux-drift-webhook:.*|\1${WEBHOOK_IMAGE}|" \
+    | kubectl apply -f -
+kubectl rollout status deployment/flux-drift-webhook -n flux-system --timeout="${TIMEOUT}"
+
+log "Running enforce-mode tests..."
+bash "${SCRIPT_DIR}/test-enforce.sh"
 
 log "All E2E tests PASSED!"

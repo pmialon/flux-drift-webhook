@@ -4,11 +4,6 @@ kind: Kustomization
 resources:
   - ../../base
 
-patches:
-  - target:
-      kind: Deployment
-      name: flux-drift-webhook
-    patch: |
-      - op: add
-        path: /spec/template/spec/containers/0/args/-
-        value: --audit-only=true
+# No patch: the base already runs in enforce mode (--audit-only defaults to
+# false). This overlay previously appended --audit-only=true, which silently
+# turned `make deploy-prod` into an audit-only deployment that blocked nothing.

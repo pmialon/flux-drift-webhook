@@ -61,8 +61,11 @@ make test-unit
 # Generate the HTML coverage report (runs `make test` first)
 make coverage
 
-# Run webhook integration tests against a live cluster
+# Run webhook integration tests against a live cluster (audit mode)
 make test-webhook
+
+# Run enforce-mode assertions against a live cluster (needs --audit-only=false + Flux)
+make test-enforce
 
 # Install envtest binaries into ./bin and print the asset directory
 make envtest
@@ -327,6 +330,34 @@ A `//go:build integration` suite lives in `internal/controller/{suite_test.go, w
 
 > **Note:** `setup-envtest` fetches the kube-apiserver/etcd binary assets from an external GitHub index (not GOPROXY); GitHub-hosted runners have the network access to fetch them, so the CI job is a **required automatic gate**. Fallbacks in restricted networks: pre-seed the assets (`ENVTEST_INSTALLED_ONLY=1`) or point `--index` at a mirror.
 
+### Enforce-mode tests (`e2e/test-enforce.sh`)
+
+Run against a live cluster with the webhook in **enforce** mode and Flux installed (`make test-enforce`). `test-webhook.sh` only ever checks that a warning was emitted — audit mode refuses nothing — so this is the only suite that proves the webhook **blocks**. It asserts both that the API server rejects the request and that the refusal names the expected decision, so a rejection from an unrelated cause (RBAC, validation) cannot pass for a success.
+
+Fixtures are suspended Kustomizations with a hand-written `.status.inventory`. The webhook only reads that field, so its provenance is irrelevant, and suspending stops kustomize-controller reconciling it away — which keeps the suite offline, with no Git or OCI source. Objects that Flux "applied" are created by impersonating `system:serviceaccount:flux-system:kustomize-controller`; the identity matters as much as the field manager, since an inventory-declared id may only be created by Flux itself (that is E3).
+
+| Test | Decision path | Assertion |
+|------|--------------|-----------|
+| E1 | `denied_update_flux_managed_fields` | Manual edit of a Flux-owned field is **rejected** |
+| E2 | `denied_delete_flux_managed` | Manual delete of a Flux-applied resource is **rejected** |
+| E3 | `denied_create_flux_labels` | CREATE of an id declared in the owner inventory is **rejected** (squat) |
+| E4 | `allowed_not_in_owner_inventory` | CREATE of an id absent from the inventory is allowed (derived object) |
+| E5 | `allowed_owning_flux_controller` | kustomize-controller still reconciles its own resource |
+| E6 | `allowed_bypass_annotation` | A bypass annotation applied via Flux lets a manual edit through |
+| E7 | `denied_bypass_annotation_added` | Adding the bypass annotation by hand is **rejected** |
+| E8 | `allowed_drift_ignored_field` | An edit to a path in the owner's `.spec.ignore` is allowed |
+| E9 | `denied_update_flux_managed_fields` | `kubectl set image` on a Flux-managed Deployment is **rejected** |
+| E10 | `allowed_no_field_conflict` | Writing `.spec.replicas`, which Flux never declared, is allowed |
+| E11 | `allowed_subresource` | The same change through the `scale` subresource is allowed |
+| E12 | `allowed_no_field_conflict` | Adding an annotation key Flux never declared is allowed |
+| E13 | `denied_update_flux_managed_fields` | Changing an annotation key Flux **did** declare is **rejected** |
+
+E9–E13 run against **podinfo** (vendored under `e2e/podinfo`, pinned by `PODINFO_VERSION`, labelled by the `e2e/podinfo-flux` overlay). It is the right fixture for free: its Deployment declares no `.spec.replicas` — the shape the README prescribes so an autoscaler can own that field — and it ships an HPA alongside, so the headline field-level case is testable without inventing a workload. E10 is the README's central promise and nothing exercised it end to end before.
+
+E12 and E13 are a deliberate pair: both patch `.spec.template.metadata.annotations`, and only one is refused. Ownership is per key, not per map — too coarse and every sidecar annotation is blocked, too fine and drift on a Flux-declared value slips through.
+
+E3, E4 and E8 are only meaningful with Flux installed: on a cluster without the CRDs the owner cannot be read and every one of them collapses into `denied_create_inventory_unavailable`, which says nothing about the logic being tested.
+
 ### Fuzzing
 
 Native Go fuzz targets live in `internal/webhook/fuzz_test.go`: `Fuzz_extractMetadata`, `Fuzz_ComputeFieldDiff`, `Fuzz_FluxManagedFields`, and `Fuzz_jsonPointerToPath` (the RFC 6901 parser for `.spec.ignore` paths). The seed corpora run as part of `make test`; the targets are exercised under `make fuzz-smoketest` (each runs for `FUZZ_TIME`, default 20s).
@@ -357,12 +388,14 @@ Run against a live cluster with the webhook in audit-only mode (`make test-webho
 
 ### E2E tests (`e2e/run-e2e.sh`)
 
-Full end-to-end: creates a kind cluster, installs cert-manager and the Prometheus Operator `PodMonitor` CRD (`deploy/base` ships a PodMonitor, so the overlay does not apply without it), deploys the webhook, then runs the integration tests above (`make test-e2e`).
+Full end-to-end (`make test-e2e`): creates a kind cluster, installs cert-manager, the Prometheus Operator `PodMonitor` CRD (`deploy/base` ships a PodMonitor, so the overlay does not apply without it) and **Flux**, deploys the webhook in audit mode, runs the integration tests above, then **switches to the prod overlay (enforce) and runs `e2e/test-enforce.sh`**.
 
 Two third-party manifests are **committed** under `e2e/` so the suite runs offline straight after a clone, with no manual setup:
 
 - `e2e/cert-manager.yaml` (cert-manager, pinned by `CERT_MANAGER_VERSION`)
 - `e2e/podmonitor-crd.yaml` (PodMonitor CRD, pinned by `PROMETHEUS_OPERATOR_VERSION`)
+- `e2e/flux-install.yaml` (Flux, pinned by `FLUX_VERSION`) — without real Kustomization/HelmRelease CRDs the owner-inventory paths can only ever fail closed on an unreadable owner
+- `e2e/podinfo/` (podinfo's kustomize manifests, pinned by `PODINFO_VERSION`) — a realistic Deployment + HPA workload for the field-level tests
 
 `make e2e-vendor` re-downloads both at the versions pinned in the Makefile — only needed when bumping one. They cost ~107 KiB compressed, which buys a `make test-e2e` that works on a fresh clone with no network access to the cluster.
 
