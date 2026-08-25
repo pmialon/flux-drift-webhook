@@ -256,25 +256,31 @@ func TestReconcile_RecreationEmitsWarning(t *testing.T) {
 }
 
 // The webhook's own namespace joins the exclusion list exactly once, appended
-// after the control-plane trio so the value matches the deployed manifests.
+// after the control-plane trio, then the operator extras in their given order —
+// matching the deployed manifests exactly (the list is atomic under SSA).
 func TestExcludedNamespaces(t *testing.T) {
 	tests := []struct {
 		name      string
 		namespace string
+		extras    []string
 		want      []string
 	}{
-		{"flux-system appended", "flux-system",
+		{"flux-system appended", "flux-system", nil,
 			[]string{"kube-system", "kube-public", "kube-node-lease", "flux-system"}},
-		{"custom namespace appended", "webhook-system",
+		{"custom namespace appended", "webhook-system", nil,
 			[]string{"kube-system", "kube-public", "kube-node-lease", "webhook-system"}},
-		{"control-plane namespace not duplicated", "kube-system",
+		{"control-plane namespace not duplicated", "kube-system", nil,
 			[]string{"kube-system", "kube-public", "kube-node-lease"}},
-		{"empty namespace ignored", "",
+		{"empty namespace ignored", "", nil,
 			[]string{"kube-system", "kube-public", "kube-node-lease"}},
+		{"extras appended in order after the built-ins", "flux-system", []string{"ci", "preview"},
+			[]string{"kube-system", "kube-public", "kube-node-lease", "flux-system", "ci", "preview"}},
+		{"extras deduplicated against built-ins and themselves", "flux-system", []string{"flux-system", "ci", "", "ci"},
+			[]string{"kube-system", "kube-public", "kube-node-lease", "flux-system", "ci"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &WebhookConfigReconciler{WebhookNamespace: tt.namespace}
+			r := &WebhookConfigReconciler{WebhookNamespace: tt.namespace, ExtraExcludedNamespaces: tt.extras}
 			got := r.excludedNamespaces()
 			if len(got) != len(tt.want) {
 				t.Fatalf("excludedNamespaces() = %v, want %v", got, tt.want)
@@ -286,6 +292,41 @@ func TestExcludedNamespaces(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The failurePolicy/timeoutSeconds knobs flow into both entries; empty/zero
+// fall back to the safe defaults (Ignore, 3) so a zero-value reconciler — the
+// pre-knob configuration — behaves identically.
+func TestBuildWebhookEntry_Knobs(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		r := &WebhookConfigReconciler{WebhookNamespace: "flux-system"}
+		entry := r.buildWebhookEntry("kustomize.test", "kustomize.toolkit.fluxcd.io/name", wildcardRules())
+		if entry.FailurePolicy == nil || *entry.FailurePolicy != admissionregistrationv1.Ignore {
+			t.Errorf("default FailurePolicy = %v, want Ignore", entry.FailurePolicy)
+		}
+		if entry.TimeoutSeconds == nil || *entry.TimeoutSeconds != 3 {
+			t.Errorf("default TimeoutSeconds = %v, want 3", entry.TimeoutSeconds)
+		}
+	})
+	t.Run("overrides", func(t *testing.T) {
+		r := &WebhookConfigReconciler{
+			WebhookNamespace:        "flux-system",
+			FailurePolicy:           admissionregistrationv1.Fail,
+			TimeoutSeconds:          10,
+			ExtraExcludedNamespaces: []string{"ci"},
+		}
+		entry := r.buildWebhookEntry("helm.test", "helm.toolkit.fluxcd.io/name", wildcardRules())
+		if entry.FailurePolicy == nil || *entry.FailurePolicy != admissionregistrationv1.Fail {
+			t.Errorf("FailurePolicy = %v, want Fail", entry.FailurePolicy)
+		}
+		if entry.TimeoutSeconds == nil || *entry.TimeoutSeconds != 10 {
+			t.Errorf("TimeoutSeconds = %v, want 10", entry.TimeoutSeconds)
+		}
+		values := entry.NamespaceSelector.MatchExpressions[0].Values
+		if values[len(values)-1] != "ci" {
+			t.Errorf("namespaceSelector values = %v, want the extra namespace appended last", values)
+		}
+	})
 }
 
 func TestWildcardRules(t *testing.T) {

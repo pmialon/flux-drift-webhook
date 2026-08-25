@@ -12,13 +12,18 @@ rules:
   # from-scratch recreation path: server-side apply of a missing object is
   # authorized as a create, so without it the controller cannot restore a VWC
   # deleted out-of-band (the apply fails Forbidden and protection stays off).
+  # Writes are scoped to the managed VWC: unscoped update/patch would let a
+  # compromised webhook pod neutralise every other admission control in the
+  # cluster. get/list/watch stay unscoped (the informer needs a cluster-wide
+  # list+watch) and create cannot be name-scoped (RBAC evaluates resourceNames
+  # after the name exists).
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["validatingwebhookconfigurations"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-  # Leader election
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "create", "update"]
+    verbs: ["get", "list", "watch", "create"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingwebhookconfigurations"]
+    resourceNames: ["flux-drift-webhook.fluxcd.io"]
+    verbs: ["update", "patch"]
   # Namespace label filtering and namespace-terminating DELETE bypass.
   # Reads go through the controller-runtime cache, whose informer performs a
   # cluster-wide list+watch — get alone breaks the cache sync and both features.

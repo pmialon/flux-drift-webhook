@@ -13,6 +13,11 @@ spec:
   restartPolicy: Never
   securityContext:
     runAsNonRoot: true
+    # busybox's image config has no USER, so it runs as uid 0 and the kubelet
+    # rejects runAsNonRoot at container creation — pin an explicit non-root uid
+    # or `helm test` can never pass.
+    runAsUser: 65534
+    runAsGroup: 65534
     seccompProfile:
       type: RuntimeDefault
   containers:

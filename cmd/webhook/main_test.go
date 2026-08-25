@@ -193,3 +193,54 @@ func TestResyncIntervalDefault(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFailurePolicy(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"Ignore", "Ignore", false},
+		{"Fail", "Fail", false},
+		{"", "", true},
+		{"ignore", "", true}, // case-sensitive, like the API enum
+		{"Always", "", true},
+	}
+	for _, tt := range tests {
+		got, err := parseFailurePolicy(tt.in)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("parseFailurePolicy(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+			continue
+		}
+		if string(got) != tt.want {
+			t.Errorf("parseFailurePolicy(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSplitCSV(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"a", []string{"a"}},
+		{"a,b", []string{"a", "b"}},
+		{" a , ,b, ", []string{"a", "b"}},
+		// Order must be preserved: the VWC exclusion list is order-sensitive
+		// under SSA and mirrors the deployed manifest.
+		{"z,a", []string{"z", "a"}},
+	}
+	for _, tt := range tests {
+		got := splitCSV(tt.in)
+		if len(got) != len(tt.want) {
+			t.Errorf("splitCSV(%q) = %v, want %v", tt.in, got, tt.want)
+			continue
+		}
+		for i := range tt.want {
+			if got[i] != tt.want[i] {
+				t.Errorf("splitCSV(%q)[%d] = %q, want %q", tt.in, i, got[i], tt.want[i])
+			}
+		}
+	}
+}

@@ -1,6 +1,14 @@
 {{- if and (not .Values.certManager.enabled) (not .Values.tls.caBundle) -}}
 {{- fail "certManager.enabled=false requires tls.caBundle (and tls.secretName) to be set" -}}
 {{- end -}}
+{{- /* The exclusion list must stay BYTE-IDENTICAL to what the controller
+applies (excludedNamespaces() dedups extras against the built-ins and
+themselves; the selector is atomic under SSA, so any difference makes the two
+appliers churn forever). Same algorithm here. */ -}}
+{{- $excludedNS := list "kube-system" "kube-public" "kube-node-lease" .Release.Namespace -}}
+{{- range .Values.webhook.extraExcludedNamespaces -}}
+{{- if not (has . $excludedNS) -}}{{- $excludedNS = append $excludedNS . -}}{{- end -}}
+{{- end -}}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -40,7 +48,7 @@ webhooks:
       matchExpressions:
         - key: kubernetes.io/metadata.name
           operator: NotIn
-          values: ["kube-system", "kube-public", "kube-node-lease", {{ .Release.Namespace | quote }}]
+          values: [{{ range $i, $ns := $excludedNS }}{{ if $i }}, {{ end }}{{ $ns | quote }}{{ end }}]
     objectSelector:
       matchExpressions:
         - key: kustomize.toolkit.fluxcd.io/name
@@ -54,8 +62,8 @@ webhooks:
     matchConditions:
       - name: exclude-admissionregistration.k8s.io
         expression: 'request.resource.group != "admissionregistration.k8s.io"'
-    failurePolicy: Ignore
-    timeoutSeconds: 3
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
     sideEffects: None
     admissionReviewVersions: ["v1"]
     matchPolicy: Equivalent
@@ -73,7 +81,7 @@ webhooks:
       matchExpressions:
         - key: kubernetes.io/metadata.name
           operator: NotIn
-          values: ["kube-system", "kube-public", "kube-node-lease", {{ .Release.Namespace | quote }}]
+          values: [{{ range $i, $ns := $excludedNS }}{{ if $i }}, {{ end }}{{ $ns | quote }}{{ end }}]
     objectSelector:
       matchExpressions:
         - key: helm.toolkit.fluxcd.io/name
@@ -87,8 +95,8 @@ webhooks:
     matchConditions:
       - name: exclude-admissionregistration.k8s.io
         expression: 'request.resource.group != "admissionregistration.k8s.io"'
-    failurePolicy: Ignore
-    timeoutSeconds: 3
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
     sideEffects: None
     admissionReviewVersions: ["v1"]
     matchPolicy: Equivalent

@@ -25,8 +25,12 @@ helm install flux-drift-webhook \
   --namespace flux-system --create-namespace
 ```
 
-> The release **must** run in the Flux namespace (`flux-system` by default). The controller's webhook
-> Service name is pinned to `flux-drift-webhook`; do not change `service.name`.
+> The release **must** run in the Flux namespace (`flux-system` by default): `--flux-namespace`
+> also selects which namespace's service accounts count as Flux controllers, so an install
+> elsewhere would make the webhook deny kustomize-/helm-controller in enforce mode. The chart now
+> **refuses to render** when the release namespace differs from `config.fluxNamespace`
+> (default `flux-system`). The controller's webhook Service name is pinned to
+> `flux-drift-webhook`; do not change `service.name`.
 
 Audit-only (log without blocking):
 
@@ -115,6 +119,12 @@ generated `HelmRepository`/`HelmRelease` manifests and let Flux reconcile them â
 | `runtime.gomaxprocs` / `gomemlimit` | Go runtime tuning (couple to `resources`) | `"2"` / `"230MiB"` |
 | `autoscaling.enabled` | HPA (CPU-only) | `true` (min 3 / max 9 / 1200% of the 25m request = 300m per pod) |
 | `podDisruptionBudget.enabled` | PDB `minAvailable: 1` | `true` |
+| `webhook.failurePolicy` | VWC failurePolicy: `Ignore` fails open on outage, `Fail` blocks writes while down | `Ignore` |
+| `webhook.timeoutSeconds` | Admission timeout (1â€“30s) | `3` |
+| `webhook.extraExcludedNamespaces` | Extra namespaces excluded from interception (appended to the built-ins) | `[]` |
+| `priorityClassName` | PriorityClass protecting the pods from eviction | `""` |
+| `topologySpreadConstraints` | Spread constraints (the default anti-affinity already spreads across hosts) | `[]` |
+| `certManager.certificate.duration` / `renewBefore` | Certificate lifetime knobs | cert-manager defaults |
 | `networkPolicy.enabled` | Ingress-only NetworkPolicy on the webhook, metrics and health ports | `true` |
 | `networkPolicy.metricsFrom` | Optional peers allowed on the metrics/health ports (empty = unrestricted) | `[]` |
 | `podMonitor.enabled` | Prometheus Operator PodMonitor | `true` |

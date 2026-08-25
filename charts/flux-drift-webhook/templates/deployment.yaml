@@ -1,3 +1,13 @@
+{{- /* --flux-namespace drives three things at once in the binary: the
+leader-election namespace, the VWC clientConfig service namespace, and —
+critically — which namespace's service accounts count as Flux controllers.
+Installing outside the Flux namespace therefore makes the webhook DENY
+kustomize-/helm-controller in enforce mode, halting GitOps reconciliation
+cluster-wide. Fail at render time instead of failing silently at runtime. */ -}}
+{{- $fluxNS := default "flux-system" .Values.config.fluxNamespace -}}
+{{- if ne .Release.Namespace $fluxNS -}}
+{{- fail (printf "install the release in the Flux namespace: release namespace %q != flux namespace %q. Install with -n %s, or — only if Flux itself runs elsewhere — set config.fluxNamespace to the namespace hosting BOTH Flux and this webhook." .Release.Namespace $fluxNS $fluxNS) -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -84,6 +94,15 @@ spec:
             {{- with .Values.config.systemControllerSas }}
             - --system-controller-sas={{ . }}
             {{- end }}
+            {{- if ne .Values.webhook.failurePolicy "Ignore" }}
+            - --failure-policy={{ .Values.webhook.failurePolicy }}
+            {{- end }}
+            {{- if ne (int .Values.webhook.timeoutSeconds) 3 }}
+            - --webhook-timeout={{ .Values.webhook.timeoutSeconds }}
+            {{- end }}
+            {{- with .Values.webhook.extraExcludedNamespaces }}
+            - --extra-excluded-namespaces={{ join "," . }}
+            {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -129,6 +148,13 @@ spec:
         - name: certs
           secret:
             secretName: {{ include "flux-drift-webhook.tlsSecretName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
