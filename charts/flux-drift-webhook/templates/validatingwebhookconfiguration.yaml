@@ -16,6 +16,15 @@ metadata:
 # only forwards requests for objects carrying a Flux ownership label
 # (Kustomization or HelmRelease). The selector matches the old OR the new
 # object on UPDATE/DELETE, so label stripping cannot dodge interception.
+#
+# The rules and matchConditions below MUST stay byte-identical to what the
+# controller applies (internal/controller/webhook_config.go): both this
+# manifest's applier and the controller server-side-apply the same values, so
+# they co-own the fields without churn. `rules` is an atomic list — shipping it
+# empty here would let a GitOps applier (kustomize-controller applies with
+# Force, helm-controller with drift detection) wipe the controller-applied
+# rules on every reconciliation, disarming the webhook until the next
+# --vwc-resync-interval tick.
 webhooks:
   - name: kustomize.{{ include "flux-drift-webhook.webhookName" . }}
     clientConfig:
@@ -36,8 +45,15 @@ webhooks:
       matchExpressions:
         - key: kustomize.toolkit.fluxcd.io/name
           operator: Exists
-    # Dynamically populated by the controller via server-side apply.
-    rules: []
+    rules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        resources: ["*"]
+        scope: "*"
+        operations: ["CREATE", "UPDATE", "DELETE"]
+    matchConditions:
+      - name: exclude-admissionregistration.k8s.io
+        expression: 'request.resource.group != "admissionregistration.k8s.io"'
     failurePolicy: Ignore
     timeoutSeconds: 3
     sideEffects: None
@@ -62,8 +78,15 @@ webhooks:
       matchExpressions:
         - key: helm.toolkit.fluxcd.io/name
           operator: Exists
-    # Dynamically populated by the controller via server-side apply.
-    rules: []
+    rules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        resources: ["*"]
+        scope: "*"
+        operations: ["CREATE", "UPDATE", "DELETE"]
+    matchConditions:
+      - name: exclude-admissionregistration.k8s.io
+        expression: 'request.resource.group != "admissionregistration.k8s.io"'
     failurePolicy: Ignore
     timeoutSeconds: 3
     sideEffects: None

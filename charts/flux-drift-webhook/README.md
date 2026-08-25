@@ -124,8 +124,10 @@ generated `HelmRepository`/`HelmRelease` manifests and let Flux reconcile them �
 | `tests.enabled` | Render a `helm test` connectivity probe | `true` |
 
 The ClusterRole rules and the ValidatingWebhookConfiguration name
-(`flux-drift-webhook.fluxcd.io`) are fixed — the controller depends on them and populates the
-webhook `rules` at runtime via server-side apply, so the chart ships an empty `rules: []` bootstrap.
+(`flux-drift-webhook.fluxcd.io`) are fixed — the controller depends on them. The chart ships the
+real webhook `rules` and `matchConditions` (they are static), byte-identical to what the controller
+re-applies via server-side apply: both appliers converge on the same values, so a GitOps tool
+force-applying the chart output cannot wipe the rules the controller owns.
 
 ## TLS without cert-manager
 

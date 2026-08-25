@@ -743,6 +743,48 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# T13: an out-of-band VWC delete is auto-repaired with the safety defaults
+#
+# The controller watches Delete events on its VWC and re-applies it from
+# scratch. Server-side apply of a MISSING object is authorized as a create, so
+# this exercises the ClusterRole's `create` verb on
+# validatingwebhookconfigurations — under real RBAC, which no other suite does
+# (unit tests use an RBAC-free fake client, envtest runs as admin; a missing
+# verb passed both and would only ever fail in production).
+#
+# The recreated object must carry failurePolicy Ignore: it has no caBundle
+# (the cert-manager annotation lives only in the deployed manifest), so
+# anything else would fail closed cluster-wide. Runs last in the audit suite:
+# the recreated VWC serves no TLS until the enforce phase reapplies the
+# manifest, which run-e2e.sh does before the enforce tests probe it.
+# ---------------------------------------------------------------------------
+log ""
+log "--- T13: out-of-band VWC delete is auto-repaired ---"
+VWC_NAME="${VWC_NAME:-flux-drift-webhook.fluxcd.io}"
+run_kubectl_cmd delete validatingwebhookconfiguration "${VWC_NAME}" --wait=true
+if assert_success "T13-delete-vwc"; then
+    RECREATED="no"
+    for _ in $(seq 1 30); do
+        if kubectl get validatingwebhookconfiguration "${VWC_NAME}"             -o jsonpath='{.webhooks[0].rules[0].apiGroups}' 2>/dev/null | grep -q '\*'; then
+            RECREATED="yes"
+            break
+        fi
+        sleep 2
+    done
+    if [[ "${RECREATED}" == "no" ]]; then
+        fail "T13: VWC was not recreated with rules within 60s of an out-of-band delete"
+    else
+        T13_FP=$(kubectl get validatingwebhookconfiguration "${VWC_NAME}"             -o jsonpath='{.webhooks[*].failurePolicy}')
+        T13_NSSEL=$(kubectl get validatingwebhookconfiguration "${VWC_NAME}"             -o jsonpath='{.webhooks[0].namespaceSelector.matchExpressions[0].values}')
+        if [[ "${T13_FP}" == "Ignore Ignore" ]] && echo "${T13_NSSEL}" | grep -q 'kube-system'; then
+            pass "T13: deleted VWC is recreated with fail-open safety defaults"
+        else
+            fail "T13: recreated VWC lacks the safety defaults (failurePolicy='${T13_FP}', nsSelector='${T13_NSSEL}')"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 log ""
