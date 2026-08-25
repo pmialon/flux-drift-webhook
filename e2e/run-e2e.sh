@@ -8,6 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-flux-drift-webhook-e2e}"
+# Optional node image override (e.g. a kindest/node for the 1.30 floor). Unset
+# uses kind's default, which is itself pinned per kind release.
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
 WEBHOOK_IMAGE="${WEBHOOK_IMAGE:-flux-drift-webhook:e2e}"
 TIMEOUT="${TIMEOUT:-120s}"
 # Third-party manifests, vendored under e2e/ and committed so this script runs
@@ -35,7 +38,8 @@ trap cleanup EXIT
 
 # Create kind cluster
 log "Creating kind cluster..."
-kind create cluster --name "${KIND_CLUSTER_NAME}" --wait "${TIMEOUT}"
+kind create cluster --name "${KIND_CLUSTER_NAME}" --wait "${TIMEOUT}" \
+    ${KIND_NODE_IMAGE:+--image "${KIND_NODE_IMAGE}"}
 
 # Build and load image
 log "Building webhook image..."

@@ -11,6 +11,9 @@ permissions:
 
 env:
   KUBECONFORM_VERSION: v0.6.7
+  # sha256 of kubeconform-linux-amd64.tar.gz at that version — the only
+  # downloaded executable in the pipeline, so its content is pinned too.
+  KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
 
 jobs:
   lint:
@@ -42,6 +45,8 @@ jobs:
         run: make verify-structure vet
       - name: Unit tests (race + coverage)
         run: make test-race
+      - name: govulncheck (known CVEs in the dependency graph, symbol-level)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - name: Upload coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -79,6 +84,13 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor (1.30 — CEL matchConditions GA, kubeVersion
+        # ">=1.30.0-0" in the chart) and the latest minor: without the floor
+        # entry, the oldest supported apiserver is never actually exercised.
+        envtest-k8s-version: ["1.30.3", "1.36.0"]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,18 +99,20 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Integration tests (envtest)
-        run: make test-integration
+      - name: Integration tests (envtest ${{ matrix.envtest-k8s-version }})
+        run: make test-integration ENVTEST_K8S_VERSION=${{ matrix.envtest-k8s-version }}
 
   manifests:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install kubeconform
+      - name: Install kubeconform (checksum-verified)
         run: |
-          curl -sSLf "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar -xz kubeconform
+          curl -sSLf -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
           sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
       - name: Validate Kustomize overlays
         run: |
@@ -112,10 +126,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install kubeconform
+      - name: Install kubeconform (checksum-verified)
         run: |
-          curl -sSLf "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar -xz kubeconform
+          curl -sSLf -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
           sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
       - name: Lint and render chart
         run: |
