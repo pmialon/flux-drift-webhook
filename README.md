@@ -403,6 +403,7 @@ The webhook exposes metrics on `:8080/metrics`:
 | `flux_drift_webhook_ownership_conflicts_total` | Counter | Dual/multiple ownership conflicts by kind and the conflicting Flux owners (`previous_owner`/`new_owner`) |
 | `flux_drift_webhook_latency_seconds` | Histogram | Request processing latency |
 | `flux_drift_webhook_config_updates_total` | Counter | ValidatingWebhookConfiguration updates |
+| `flux_drift_webhook_owner_lookup_errors_total` | Counter | Failed reads of the owning Kustomization/HelmRelease (the root cause behind fail-closed CREATE denials and lost `.spec.ignore` waivers) |
 
 ### Example Prometheus Queries
 

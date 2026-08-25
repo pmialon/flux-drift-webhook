@@ -124,6 +124,10 @@ func main() {
 	leaderElectionOptions.BindFlags(flag.CommandLine)
 	loggerOptions.BindFlags(flag.CommandLine)
 
+	// pflag prints a deprecation warning whenever the alias is used and hides
+	// it from --help; the precedence logic below still honours it.
+	_ = flag.CommandLine.MarkDeprecated("discovery-interval", "use --vwc-resync-interval")
+
 	flag.Parse()
 
 	log := logger.NewLogger(loggerOptions)
@@ -131,9 +135,11 @@ func main() {
 
 	// The webhook rules are static since GVK discovery was replaced by a
 	// wildcard rule plus CEL matchConditions, so the interval now only paces
-	// re-applies. The old flag keeps working to avoid breaking deployments.
-	if flag.CommandLine.Changed("discovery-interval") {
-		log.Info("--discovery-interval is deprecated, use --vwc-resync-interval")
+	// re-applies. The old flag keeps working to avoid breaking deployments —
+	// but an explicit --vwc-resync-interval wins over the alias: during a
+	// migration both flags coexist, and the alias silently overriding the new
+	// flag inverted the env-var precedence (where VWC_RESYNC_INTERVAL wins).
+	if flag.CommandLine.Changed("discovery-interval") && !flag.CommandLine.Changed("vwc-resync-interval") {
 		vwcResyncInterval = discoveryInterval
 	}
 
@@ -199,6 +205,12 @@ func main() {
 
 	m := metrics.NewMetrics()
 
+	effectiveSystemSAs, err := mergeSystemControllerSAs(systemControllerSAs)
+	if err != nil {
+		log.Error(err, "invalid --system-controller-sas")
+		os.Exit(1)
+	}
+
 	handler := &webhookhandler.DriftPreventionHandler{
 		Log:                   log.WithName("webhook"),
 		FluxNamespace:         fluxNamespace,
@@ -208,7 +220,7 @@ func main() {
 		NamespaceLabelValue:   namespaceLabelValue,
 		NamespaceFetchTimeout: namespaceFetchTimeout,
 		Client:                mgr.GetClient(),
-		SystemControllerSAs:   mergeSystemControllerSAs(systemControllerSAs),
+		SystemControllerSAs:   effectiveSystemSAs,
 	}
 
 	mgr.GetWebhookServer().Register(config.WebhookPath, &webhook.Admission{Handler: handler})
@@ -376,9 +388,16 @@ func splitCSV(csv string) []string {
 }
 
 // mergeSystemControllerSAs returns the built-in default control-plane service
-// accounts unioned with any operator-supplied "namespace:name" entries (CSV).
-// Defaults are always included so configuring extras never drops them.
-func mergeSystemControllerSAs(csv string) []string {
+// accounts unioned with any operator-supplied entries (CSV). Defaults are
+// always included so configuring extras never drops them.
+//
+// Entries are validated: a well-intentioned entry in the FULL service-account
+// username form (system:serviceaccount:<ns>:<name>) can never match either
+// comparison branch in IsSystemController — the username branch excludes that
+// prefix and the shorthand branch compares "<ns>:<name>" — so it would be
+// silently inert, producing unexplainable denies in production. Failing fast
+// at startup is the policy for exactly this class of mistake.
+func mergeSystemControllerSAs(csv string) ([]string, error) {
 	result := append([]string{}, config.DefaultSystemControllerServiceAccounts()...)
 	seen := make(map[string]bool, len(result))
 	for _, e := range result {
@@ -389,10 +408,23 @@ func mergeSystemControllerSAs(csv string) []string {
 		if e == "" || seen[e] {
 			continue
 		}
+		if strings.HasPrefix(e, "system:serviceaccount:") {
+			return nil, fmt.Errorf(
+				"entry %q uses the full service-account username form, which never matches; "+
+					"use the namespace:name shorthand instead", e)
+		}
+		if !strings.HasPrefix(e, "system:") {
+			parts := strings.Split(e, ":")
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return nil, fmt.Errorf(
+					"entry %q is neither a namespace:name service-account shorthand nor a "+
+						"full system: component username", e)
+			}
+		}
 		seen[e] = true
 		result = append(result, e)
 	}
-	return result
+	return result, nil
 }
 
 func getEnv(key, defaultValue string) string {
