@@ -31,6 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_NS="drift-enforce-test"
 WEBHOOK_NS="flux-system"
 OWNER_NAME="e2e-app"
+HELM_OWNER_NAME="e2e-helm-app"
 TMPDIR_TEST=$(mktemp -d)
 
 PASS=0
@@ -95,6 +96,7 @@ manifest() {
 cleanup() {
     kubectl delete namespace "${TEST_NS}" --wait=false >/dev/null 2>&1 || true
     kubectl delete kustomization "${OWNER_NAME}" -n "${WEBHOOK_NS}" --wait=false >/dev/null 2>&1 || true
+    kubectl delete helmrelease "${HELM_OWNER_NAME}" -n "${WEBHOOK_NS}" --wait=false >/dev/null 2>&1 || true
     rm -rf "${TMPDIR_TEST}"
 }
 trap cleanup EXIT
@@ -457,6 +459,127 @@ log "--- E13: changing an annotation key Flux DID declare (denied_update_flux_ma
 run_kubectl patch deployment podinfo -n "${TEST_NS}" --type=merge \
     -p '{"spec":{"template":{"metadata":{"annotations":{"prometheus.io/port":"1234"}}}}}'
 assert_denied "E13: changing a Flux-declared annotation is blocked" "Flux-managed fields"
+
+
+# ===========================================================================
+# H1-H4: the HelmRelease/helm-controller half of E1-E4
+#
+# Every fixture above uses Kustomization labels and the kustomize-controller
+# identity. The helm paths hardcode the owner GVK (helm.toolkit.fluxcd.io/v2)
+# and match the helm-controller field manager by name — neither of which ever
+# met a REAL HelmRelease CRD or apiserver-written managedFields before this
+# block. A wrong hardcoded API version would disable the entire helm side
+# silently.
+# ===========================================================================
+log ""
+log "=== HelmRelease half (helm-controller identity, helm labels) ==="
+
+if ! kubectl get crd helmreleases.helm.toolkit.fluxcd.io >/dev/null 2>&1; then
+    log "ERROR: HelmRelease CRD not found — install Flux first (e2e/run-e2e.sh does this)"
+    exit 1
+fi
+
+HELM_LABELS='
+    helm.toolkit.fluxcd.io/name: '"${HELM_OWNER_NAME}"'
+    helm.toolkit.fluxcd.io/namespace: '"${WEBHOOK_NS}"
+
+# The owning HelmRelease: suspended, sourceless — same offline pattern as the
+# Kustomization fixture. Only .status.inventory is ever read by the webhook.
+MANIFEST=$(manifest helm-owner <<YAML
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: ${HELM_OWNER_NAME}
+  namespace: ${WEBHOOK_NS}
+spec:
+  interval: 1h
+  suspend: true
+  chart:
+    spec:
+      chart: does-not-exist
+      sourceRef:
+        kind: HelmRepository
+        name: does-not-exist
+YAML
+)
+kubectl apply -f "${MANIFEST}" >/dev/null
+kubectl patch helmrelease "${HELM_OWNER_NAME}" -n "${WEBHOOK_NS}" \
+    --subresource=status --type=merge \
+    -p "{\"status\":{\"inventory\":{\"entries\":[{\"id\":\"${TEST_NS}_helm-managed-cm__ConfigMap\",\"v\":\"v1\"}]}}}" >/dev/null
+log "Owner HelmRelease ${WEBHOOK_NS}/${HELM_OWNER_NAME} ready, inventory declares ${TEST_NS}/helm-managed-cm"
+
+HELM_SA="--as=system:serviceaccount:flux-system:helm-controller"
+MANIFEST=$(manifest helm-managed <<YAML
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: helm-managed-cm
+  namespace: ${TEST_NS}
+  labels:${HELM_LABELS}
+data:
+  managed: "from-chart"
+YAML
+)
+if ! kubectl apply --server-side --field-manager=helm-controller ${HELM_SA} -f "${MANIFEST}" >/dev/null 2>"${TMPDIR_TEST}/helm-setup.err"; then
+    log "ERROR: could not create the helm-applied fixture"
+    log "    $(cat "${TMPDIR_TEST}/helm-setup.err")"
+    exit 1
+fi
+log "helm-applied ConfigMap ${TEST_NS}/helm-managed-cm created (as helm-controller)"
+
+log ""
+log "--- H1: UPDATE a helm-managed field (denied_update_flux_managed_fields) ---"
+MANIFEST=$(manifest h1 <<YAML
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: helm-managed-cm
+  namespace: ${TEST_NS}
+  labels:${HELM_LABELS}
+data:
+  managed: "hand-edited"
+YAML
+)
+run_kubectl apply -f "${MANIFEST}"
+assert_denied "H1: manual edit of a helm-owned field is blocked" "Flux-managed fields"
+
+log ""
+log "--- H2: DELETE a helm-applied resource (denied_delete_flux_managed) ---"
+run_kubectl delete configmap helm-managed-cm -n "${TEST_NS}"
+assert_denied "H2: manual delete of a helm-applied resource is blocked" "cannot delete Flux-managed resource"
+
+log ""
+log "--- H3: CREATE an id declared in the HelmRelease inventory (denied_create_flux_labels) ---"
+kubectl delete configmap helm-managed-cm -n "${TEST_NS}" --ignore-not-found ${HELM_SA} >/dev/null 2>&1 || true
+MANIFEST=$(manifest h3 <<YAML
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: helm-managed-cm
+  namespace: ${TEST_NS}
+  labels:${HELM_LABELS}
+data:
+  squatted: "yes"
+YAML
+)
+run_kubectl apply -f "${MANIFEST}"
+assert_denied "H3: squatting a HelmRelease-inventory id is blocked" "Flux inventory"
+
+log ""
+log "--- H4: CREATE an id absent from the HelmRelease inventory (allowed_not_in_owner_inventory) ---"
+MANIFEST=$(manifest h4 <<YAML
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: helm-derived-cm
+  namespace: ${TEST_NS}
+  labels:${HELM_LABELS}
+data:
+  derived: "yes"
+YAML
+)
+run_kubectl apply -f "${MANIFEST}"
+assert_allowed "H4: an object outside the HelmRelease inventory is allowed (derived resource)"
 
 # ---------------------------------------------------------------------------
 # Summary
