@@ -1,0 +1,77 @@
+---
+# The webhook's designed failure mode is silence: failurePolicy Ignore means an
+# outage simply stops denying, and a broken VWC apply leaves protection off with
+# no user-visible symptom. These alerts are the compensating control — they page
+# on the fail-open window (no scrape target), on the VWC re-apply failing, and
+# on the signals worth a human look (deny spikes, ownership conflicts).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flux-drift-webhook
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: flux
+    app.kubernetes.io/component: monitoring
+spec:
+  groups:
+    - name: flux-drift-webhook
+      rules:
+        - alert: FluxDriftWebhookDown
+          # Fires when the scrape target is down OR absent entirely (webhook
+          # pods gone, PodMonitor deleted, NetworkPolicy blocking the scrape).
+          # With failurePolicy Ignore this is exactly the fail-open window.
+          expr: (max(up{job="flux-system/flux-drift-webhook"}) or on() vector(0)) < 1
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: Flux drift prevention is not being scraped
+            description: >-
+              No healthy flux-drift-webhook scrape target for 15m. The webhook
+              fails open (failurePolicy Ignore), so drift protection is likely
+              OFF while this alert fires. Check the pods, the PodMonitor and
+              the NetworkPolicy in flux-system.
+        - alert: FluxDriftWebhookConfigUpdateFailing
+          # The controller re-applies the ValidatingWebhookConfiguration on
+          # --vwc-resync-interval; persistent errors mean the VWC may not match
+          # the intended rules (e.g. after an out-of-band edit) and protection
+          # may be silently disarmed.
+          expr: rate(flux_drift_webhook_config_updates_total{status="error"}[10m]) > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: ValidatingWebhookConfiguration re-apply is failing
+            description: >-
+              flux-drift-webhook has been failing to apply its
+              ValidatingWebhookConfiguration for 10m. Drift protection may be
+              disarmed. Check the webhook logs and RBAC on
+              validatingwebhookconfigurations.
+        - alert: FluxDriftWebhookDenySpike
+          # A sustained denial rate means something (a controller, a CI job, an
+          # operator) is repeatedly fighting drift prevention — either an attack
+          # or a misconfiguration that will starve a legitimate reconciler.
+          expr: sum(rate(flux_drift_webhook_denials_total[5m])) > 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Sustained spike of drift-prevention denials
+            description: >-
+              flux-drift-webhook has denied more than 1 request/s for 10m.
+              Inspect flux_drift_webhook_requests_total by decision and the
+              webhook logs to identify the caller.
+        - alert: FluxDriftWebhookOwnershipConflict
+          # Two Flux reconcilers are flipping the ownership labels of the same
+          # resource — each reconciliation rewrites the other's work until one
+          # is removed.
+          expr: increase(flux_drift_webhook_ownership_conflicts_total[15m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: Multiple Flux reconcilers own the same resource
+            description: >-
+              flux_drift_webhook_ownership_conflicts_total increased in the
+              last 15m: two Kustomizations/HelmReleases are managing the same
+              object. Use the previous_owner/new_owner labels to find the pair
+              and give the resource a single owner.

@@ -17,4 +17,19 @@ spec:
     - ports:
         - port: {{ .Values.ports.webhook }}
           protocol: TCP
+    # Allow Prometheus to scrape the metrics port (the PodMonitor targets it)
+    # and the kubelet to reach the health-probe port on CNIs that police
+    # node-originated traffic. Metrics are the webhook's only failure signal —
+    # failurePolicy Ignore fails open silently — so blocking the scrape
+    # defeats the monitoring this chart ships. Restrict the allowed peers via
+    # networkPolicy.metricsFrom (empty = unrestricted, matching deploy/base).
+    - ports:
+        - port: {{ .Values.ports.metrics }}
+          protocol: TCP
+        - port: {{ .Values.ports.health }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.metricsFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}

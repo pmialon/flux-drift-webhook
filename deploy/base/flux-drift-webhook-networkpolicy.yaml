@@ -13,3 +13,13 @@ spec:
     - ports:
         - port: 9443
           protocol: TCP
+    # Allow Prometheus to scrape the metrics port (the PodMonitor shipped in
+    # this base targets it) and the kubelet to reach the health-probe port on
+    # CNIs that police node-originated traffic. Metrics are the webhook's only
+    # failure signal — failurePolicy: Ignore fails open silently — so a policy
+    # that blocks the scrape defeats the monitoring this base ships.
+    - ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8081
+          protocol: TCP

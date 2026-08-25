@@ -74,6 +74,8 @@ e2e-vendor:
 		"https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml"
 	curl -sSLf -o e2e/podmonitor-crd.yaml \
 		"https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/$(PROMETHEUS_OPERATOR_VERSION)/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml"
+	curl -sSLf -o e2e/prometheusrule-crd.yaml \
+		"https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/$(PROMETHEUS_OPERATOR_VERSION)/example/prometheus-operator-crd/monitoring.coreos.com_prometheusrules.yaml"
 	curl -sSLf -o e2e/flux-install.yaml \
 		"https://github.com/fluxcd/flux2/releases/download/$(FLUX_VERSION)/install.yaml"
 	for f in kustomization.yaml deployment.yaml service.yaml hpa.yaml; do \

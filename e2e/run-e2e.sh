@@ -13,9 +13,10 @@ TIMEOUT="${TIMEOUT:-120s}"
 # Third-party manifests, vendored under e2e/ and committed so this script runs
 # offline straight after a clone. Bump them with `make e2e-vendor`.
 CERT_MANAGER_MANIFEST="${CERT_MANAGER_MANIFEST:-${SCRIPT_DIR}/cert-manager.yaml}"
-# deploy/base ships a PodMonitor, so the Prometheus Operator CRD must exist or
-# the whole overlay fails to apply.
+# deploy/base ships a PodMonitor and a PrometheusRule, so both Prometheus
+# Operator CRDs must exist or the whole overlay fails to apply.
 PODMONITOR_CRD="${PODMONITOR_CRD:-${SCRIPT_DIR}/podmonitor-crd.yaml}"
+PROMETHEUSRULE_CRD="${PROMETHEUSRULE_CRD:-${SCRIPT_DIR}/prometheusrule-crd.yaml}"
 # Real Flux, so the owner-inventory paths run against genuine Kustomization and
 # HelmRelease CRDs instead of a cluster where they do not exist — without it the
 # CREATE checks can only ever fail closed on an unreadable owner.
@@ -73,6 +74,16 @@ fi
 # --server-side: the CRD exceeds the annotation size limit of client-side apply.
 kubectl apply --server-side -f "${PODMONITOR_CRD}"
 kubectl wait --for=condition=Established crd/podmonitors.monitoring.coreos.com --timeout="${TIMEOUT}"
+
+# Install the PrometheusRule CRD (deploy/base ships a PrometheusRule).
+log "Installing the PrometheusRule CRD..."
+if [[ ! -f "${PROMETHEUSRULE_CRD}" ]]; then
+    log "ERROR: PrometheusRule CRD not found at ${PROMETHEUSRULE_CRD}"
+    log "It is committed under e2e/; restore it with 'make e2e-vendor'"
+    exit 1
+fi
+kubectl apply --server-side -f "${PROMETHEUSRULE_CRD}"
+kubectl wait --for=condition=Established crd/prometheusrules.monitoring.coreos.com --timeout="${TIMEOUT}"
 
 # Install Flux.
 log "Installing Flux..."

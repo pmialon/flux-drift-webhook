@@ -15,6 +15,7 @@ resources:
   - flux-drift-webhook-certificate.yaml
   - flux-drift-webhook-validatingwebhookconfiguration.yaml
   - flux-drift-webhook-podmonitor.yaml
+  - flux-drift-webhook-prometheusrule.yaml
 
 labels:
   - pairs:

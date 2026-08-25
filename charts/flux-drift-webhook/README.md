@@ -11,7 +11,7 @@ Both render the same set of resources.
 - Kubernetes >= 1.27
 - [cert-manager](https://cert-manager.io) (default TLS path; or bring your own — see below)
 - FluxCD installed in the target namespace (`flux-system`)
-- Prometheus Operator CRDs, if `podMonitor.enabled=true` (default)
+- Prometheus Operator CRDs, if `podMonitor.enabled=true` or `prometheusRule.enabled=true` (both default)
 
 ## Install
 
@@ -115,8 +115,10 @@ generated `HelmRepository`/`HelmRelease` manifests and let Flux reconcile them �
 | `runtime.gomaxprocs` / `gomemlimit` | Go runtime tuning (couple to `resources`) | `"2"` / `"230MiB"` |
 | `autoscaling.enabled` | HPA (CPU-only) | `true` (min 3 / max 9 / 1200% of the 25m request = 300m per pod) |
 | `podDisruptionBudget.enabled` | PDB `minAvailable: 1` | `true` |
-| `networkPolicy.enabled` | Ingress-only NetworkPolicy on the webhook port | `true` |
+| `networkPolicy.enabled` | Ingress-only NetworkPolicy on the webhook, metrics and health ports | `true` |
+| `networkPolicy.metricsFrom` | Optional peers allowed on the metrics/health ports (empty = unrestricted) | `[]` |
 | `podMonitor.enabled` | Prometheus Operator PodMonitor | `true` |
+| `prometheusRule.enabled` | Alerts for the silent failure modes (fail-open outage, VWC re-apply errors, deny spikes, ownership conflicts) | `true` |
 | `certManager.enabled` | Manage TLS via cert-manager (self-signed Issuer + Certificate) | `true` |
 | `tls.secretName` / `tls.caBundle` | External TLS secret + CA, required when `certManager.enabled=false` | `""` |
 | `service.name` | Webhook Service name — **pinned** to the controller's expectation | `flux-drift-webhook` |

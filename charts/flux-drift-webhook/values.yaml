@@ -126,12 +126,25 @@ podDisruptionBudget:
 
 networkPolicy:
   enabled: true
+  # -- Optional ingress peers allowed to reach the metrics and health ports
+  # (NetworkPolicyPeer list, e.g. a namespaceSelector for the monitoring
+  # namespace). Empty = unrestricted, matching deploy/base. The webhook port
+  # stays open to any peer regardless (the API server must always reach it).
+  metricsFrom: []
 
 podMonitor:
   enabled: true
   interval: 30s
   path: /metrics
   # Extra labels for the Prometheus Operator's PodMonitor selector (e.g. release: kube-prometheus-stack).
+  additionalLabels: {}
+
+# Alert rules for the silent failure modes (fail-open outage, VWC re-apply
+# errors, deny spikes, ownership conflicts). Requires the Prometheus Operator
+# PrometheusRule CRD, like podMonitor requires the PodMonitor CRD.
+prometheusRule:
+  enabled: true
+  # Extra labels for the Prometheus Operator's rule selector (e.g. release: kube-prometheus-stack).
   additionalLabels: {}
 
 # cert-manager integration (TLS for the webhook server).
