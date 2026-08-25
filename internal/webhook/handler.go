@@ -28,7 +28,6 @@ import (
 
 	"github.com/go-logr/logr"
 	admissionv1 "k8s.io/api/admission/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -380,8 +379,13 @@ func ownerGVK(managedBy string) (schema.GroupVersionKind, bool) {
 // a type missing here is created lazily by the first request that needs it,
 // which pays the list+watch inline and, since every cache-backed check is
 // fail-closed, gets denied while it completes.
+//
+// Namespaces appear as PartialObjectMetadata: the handler reads them
+// metadata-only (see NamespaceMetadata), so the pre-warmed informer must be
+// the metadata one — pre-warming a full corev1.Namespace informer would sync
+// a cache the handler never reads.
 func CachedObjectTypes() []client.Object {
-	objs := []client.Object{&corev1.Namespace{}}
+	objs := []client.Object{NamespaceMetadata()}
 	for _, managedBy := range []string{ManagedByKustomization, ManagedByHelmRelease} {
 		gvk, ok := ownerGVK(managedBy)
 		if !ok {
@@ -585,7 +589,9 @@ func (h *DriftPreventionHandler) namespaceIsTerminating(ctx context.Context, nam
 	fetchCtx, cancel := context.WithTimeout(ctx, cmp.Or(h.NamespaceFetchTimeout, DefaultNamespaceFetchTimeout))
 	defer cancel()
 
-	ns := &corev1.Namespace{}
+	// Metadata-only read: served from the metadata informer, so the cache
+	// never stores namespace spec/status (see NamespaceMetadata).
+	ns := NamespaceMetadata()
 	if err := h.Client.Get(fetchCtx, client.ObjectKey{Name: namespace}, ns); err != nil {
 		log.V(1).Info("could not read namespace for terminating check", "namespace", namespace, "error", err)
 		return false
@@ -878,7 +884,9 @@ func (h *DriftPreventionHandler) shouldProcessNamespace(ctx context.Context, nam
 	fetchCtx, cancel := context.WithTimeout(ctx, cmp.Or(h.NamespaceFetchTimeout, DefaultNamespaceFetchTimeout))
 	defer cancel()
 
-	ns := &corev1.Namespace{}
+	// Metadata-only read, like namespaceIsTerminating: the label filter needs
+	// nothing beyond metadata.
+	ns := NamespaceMetadata()
 	if err := h.Client.Get(fetchCtx, client.ObjectKey{Name: namespace}, ns); err != nil {
 		log.Error(err, "failed to get namespace", "namespace", namespace)
 		return true, err

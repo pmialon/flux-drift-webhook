@@ -145,6 +145,12 @@ func main() {
 		// Serve unstructured reads (owning Kustomization/HelmRelease lookups)
 		// from the cache instead of hitting the API server on every request.
 		Client: client.Options{Cache: &client.CacheOptions{Unstructured: true}},
+		// The informers are cluster-wide and grow with the GitOps estate, while
+		// the container runs under a small memory limit: cache only what the
+		// handler reads (owners stripped to three fields, namespaces
+		// metadata-only, managedFields dropped everywhere). See
+		// webhookhandler.CacheOptions and the "Resource sizing" README section.
+		Cache: webhookhandler.CacheOptions(),
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
 			ExtraHandlers: pprof.GetHandlers(),
