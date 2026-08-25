@@ -123,6 +123,39 @@ jobs:
           helm template flux-drift-webhook charts/flux-drift-webhook -n flux-system \
             | kubeconform -strict -ignore-missing-schemas -summary
 
+  # The only suite that proves the webhook actually BLOCKS: unit tests run
+  # against fakes and the audit-mode suite only ever asserts warnings, so
+  # e2e/test-enforce.sh (run by run-e2e.sh after the audit pass) is the sole
+  # automated exercise of the end-to-end chain — VWC interception, cert-manager
+  # TLS, enforce-overlay flags, real apiserver rejections, the T12 readiness
+  # gate. All third-party manifests are vendored under e2e/, so the cluster
+  # needs no internet access.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install kind
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          install_only: true
+      - name: Install kustomize if missing
+        run: |
+          if ! command -v kustomize >/dev/null 2>&1; then
+            curl -sSLf "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
+              | tar -xz kustomize
+            sudo install -m 0755 kustomize /usr/local/bin/kustomize
+          fi
+          kustomize version
+      - name: E2E tests (kind, audit + enforce)
+        run: make test-e2e
+
   build:
     runs-on: ubuntu-latest
     steps:

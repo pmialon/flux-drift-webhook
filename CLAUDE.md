@@ -112,7 +112,7 @@ make verify
 # Fail if fmt/vet/tidy/generate left the working tree dirty
 make verify-dirty
 
-# Full local CI pipeline (verify + verify-docker + test-integration + fuzz-smoketest)
+# Full local CI pipeline (verify + verify-docker + test-integration + fuzz-smoketest + test-e2e)
 make ci
 
 # Clean build artefacts
@@ -416,9 +416,12 @@ Two GitHub Actions workflows live in `.github/workflows/`.
 | `integration` | `make test-integration` (envtest against a real apiserver) |
 | `manifests` | `kubeconform` validation of `deploy/base` and both overlays |
 | `helm` | `helm lint` plus rendered-template `kubeconform` validation |
+| `e2e` | `make test-e2e` (kind cluster, audit suite then enforce suite — the only automated proof the webhook blocks) |
 | `build` | multi-arch container image build (`linux/amd64,linux/arm64`), no push |
 
-**`release.yaml`** runs on `v*` tags: it builds and pushes a multi-arch image to
+**`release.yaml`** runs on `v*` tags: a `test` job (vet, race-enabled unit tests, envtest
+integration suite) gates the `release` job — a tag on an untested commit is never signed or
+published. It then builds and pushes a multi-arch image to
 `ghcr.io/pmialon/flux-drift-webhook` (with SBOM and build provenance), signs it with cosign
 (keyless, GitHub OIDC), generates SLSA provenance, publishes the Helm chart as an OCI artefact to
 `oci://ghcr.io/pmialon/charts`, and creates a GitHub release via GoReleaser (source archive, SBOM,
