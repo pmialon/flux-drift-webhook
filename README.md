@@ -420,6 +420,24 @@ sum by (kind, previous_owner, new_owner) (
 histogram_quantile(0.95, rate(flux_drift_webhook_latency_seconds_bucket[5m]))
 ```
 
+### Shipped Alerts (PrometheusRule)
+
+The webhook's designed failure mode is **silence**: `failurePolicy: Ignore` means an outage
+simply stops denying, with no user-visible symptom. `deploy/base` therefore ships a
+`PrometheusRule` (and the chart renders one when `prometheusRule.enabled=true`, the default)
+alongside the PodMonitor:
+
+| Alert | Severity | Fires when |
+|-------|----------|-----------|
+| `FluxDriftWebhookDown` | critical | No healthy scrape target for 15m — pods gone, PodMonitor deleted or scrape blocked. This is the fail-open window. |
+| `FluxDriftWebhookConfigUpdateFailing` | critical | The ValidatingWebhookConfiguration re-apply has been failing for 10m (protection may be disarmed) |
+| `FluxDriftWebhookDenySpike` | warning | Sustained denial rate above 1 req/s for 10m (something is fighting drift prevention) |
+| `FluxDriftWebhookOwnershipConflict` | warning | Two Flux reconcilers are flipping ownership of the same resource |
+
+Both manifests require the Prometheus Operator CRDs (PodMonitor, PrometheusRule). The
+NetworkPolicy shipped in the base and the chart allows ingress to the metrics port so the
+scrape actually works; the chart can restrict the allowed peers via `networkPolicy.metricsFrom`.
+
 ### Health Endpoints
 
 - `/healthz` — Liveness probe
@@ -448,7 +466,7 @@ flux-drift-webhook/
 │       ├── dev/             # Audit-only mode
 │       └── prod/            # Enforce mode (no --audit-only patch)
 └── e2e/                     # E2E suites (audit + enforce) and vendored
-                             # cert-manager / PodMonitor CRD / Flux / podinfo
+                             # cert-manager / Prometheus Operator CRDs / Flux / podinfo
 ```
 
 ### Building from Source

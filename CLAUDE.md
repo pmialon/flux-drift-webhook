@@ -29,7 +29,7 @@ flux-drift-webhook/
 │       ├── labels.go                   # Flux labels detection
 │       └── fuzz_test.go                # Native Go fuzz targets
 ├── deploy/
-│   ├── base/                           # Kustomize base manifests (incl. PDB)
+│   ├── base/                           # Kustomize base manifests (incl. PDB, PodMonitor, PrometheusRule)
 │   └── overlays/
 │       ├── dev/                        # Audit-only mode
 │       └── prod/                       # Enforce mode
@@ -388,12 +388,12 @@ Run against a live cluster with the webhook in audit-only mode (`make test-webho
 
 ### E2E tests (`e2e/run-e2e.sh`)
 
-Full end-to-end (`make test-e2e`): creates a kind cluster, installs cert-manager, the Prometheus Operator `PodMonitor` CRD (`deploy/base` ships a PodMonitor, so the overlay does not apply without it) and **Flux**, deploys the webhook in audit mode, runs the integration tests above, then **switches to the prod overlay (enforce) and runs `e2e/test-enforce.sh`**.
+Full end-to-end (`make test-e2e`): creates a kind cluster, installs cert-manager, the Prometheus Operator `PodMonitor` and `PrometheusRule` CRDs (`deploy/base` ships a PodMonitor and a PrometheusRule, so the overlay does not apply without them) and **Flux**, deploys the webhook in audit mode, runs the integration tests above, then **switches to the prod overlay (enforce) and runs `e2e/test-enforce.sh`**.
 
 Two third-party manifests are **committed** under `e2e/` so the suite runs offline straight after a clone, with no manual setup:
 
 - `e2e/cert-manager.yaml` (cert-manager, pinned by `CERT_MANAGER_VERSION`)
-- `e2e/podmonitor-crd.yaml` (PodMonitor CRD, pinned by `PROMETHEUS_OPERATOR_VERSION`)
+- `e2e/podmonitor-crd.yaml` and `e2e/prometheusrule-crd.yaml` (PodMonitor + PrometheusRule CRDs, pinned by `PROMETHEUS_OPERATOR_VERSION`)
 - `e2e/flux-install.yaml` (Flux, pinned by `FLUX_VERSION`) — without real Kustomization/HelmRelease CRDs the owner-inventory paths can only ever fail closed on an unreadable owner
 - `e2e/podinfo/` (podinfo's kustomize manifests, pinned by `PODINFO_VERSION`) — a realistic Deployment + HPA workload for the field-level tests
 
@@ -462,7 +462,7 @@ Jobs are wired to the `make` targets above, so the local `make verify` / `make c
 **Webhook unavailable:**
 - The VWC uses `failurePolicy: Ignore` — if the webhook is down, all operations are allowed
 - A PodDisruptionBudget (`minAvailable: 1`) prevents all pods being evicted simultaneously
-- Monitor `flux_drift_webhook_requests_total` for gaps to detect outage windows
+- Monitor `flux_drift_webhook_requests_total` for gaps to detect outage windows — the shipped `PrometheusRule` (base + chart) alerts on exactly this (`FluxDriftWebhookDown`), plus failing VWC re-applies, deny spikes and ownership conflicts
 
 ## Reference Documentation
 

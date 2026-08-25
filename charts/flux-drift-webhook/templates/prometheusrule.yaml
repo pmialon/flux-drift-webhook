@@ -1,0 +1,80 @@
+{{- if .Values.prometheusRule.enabled -}}
+{{- $job := printf "%s/%s" .Release.Namespace (include "flux-drift-webhook.fullname" .) -}}
+# The webhook's designed failure mode is silence: failurePolicy Ignore means an
+# outage simply stops denying, and a broken VWC apply leaves protection off with
+# no user-visible symptom. These alerts are the compensating control.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "flux-drift-webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "flux-drift-webhook.fullname" . }}
+      rules:
+        - alert: FluxDriftWebhookDown
+          # Fires when the scrape target is down OR absent entirely (webhook
+          # pods gone, PodMonitor deleted, NetworkPolicy blocking the scrape).
+          # With failurePolicy Ignore this is exactly the fail-open window.
+          # The job label is the PodMonitor's <namespace>/<name>.
+          expr: (max(up{job={{ $job | quote }}}) or on() vector(0)) < 1
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: Flux drift prevention is not being scraped
+            description: >-
+              No healthy {{ include "flux-drift-webhook.fullname" . }} scrape
+              target for 15m. The webhook fails open (failurePolicy Ignore), so
+              drift protection is likely OFF while this alert fires. Check the
+              pods, the PodMonitor and the NetworkPolicy in
+              {{ .Release.Namespace }}.
+        - alert: FluxDriftWebhookConfigUpdateFailing
+          # The controller re-applies the ValidatingWebhookConfiguration on
+          # --vwc-resync-interval; persistent errors mean the VWC may not match
+          # the intended rules and protection may be silently disarmed.
+          expr: rate(flux_drift_webhook_config_updates_total{status="error"}[10m]) > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: ValidatingWebhookConfiguration re-apply is failing
+            description: >-
+              {{ include "flux-drift-webhook.fullname" . }} has been failing to
+              apply its ValidatingWebhookConfiguration for 10m. Drift
+              protection may be disarmed. Check the webhook logs and RBAC on
+              validatingwebhookconfigurations.
+        - alert: FluxDriftWebhookDenySpike
+          # A sustained denial rate means something is repeatedly fighting
+          # drift prevention — an attack, or a misconfiguration starving a
+          # legitimate reconciler.
+          expr: sum(rate(flux_drift_webhook_denials_total[5m])) > 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Sustained spike of drift-prevention denials
+            description: >-
+              {{ include "flux-drift-webhook.fullname" . }} has denied more
+              than 1 request/s for 10m. Inspect
+              flux_drift_webhook_requests_total by decision and the webhook
+              logs to identify the caller.
+        - alert: FluxDriftWebhookOwnershipConflict
+          # Two Flux reconcilers are flipping the ownership labels of the same
+          # resource — each reconciliation rewrites the other's work.
+          expr: increase(flux_drift_webhook_ownership_conflicts_total[15m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: Multiple Flux reconcilers own the same resource
+            description: >-
+              flux_drift_webhook_ownership_conflicts_total increased in the
+              last 15m: two Kustomizations/HelmReleases are managing the same
+              object. Use the previous_owner/new_owner labels to find the pair
+              and give the resource a single owner.
+{{- end }}
