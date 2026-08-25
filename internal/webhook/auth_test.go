@@ -239,6 +239,23 @@ func TestIsSystemController(t *testing.T) {
 			groups:   []string{"system:authenticated"},
 			want:     false,
 		},
+		// The inverse of the guard above: a real ServiceAccount whose
+		// namespace:name shorthand renders a reserved full-username entry.
+		// "system" is a legal, unreserved namespace name; without the
+		// shorthand-side guard this principal spoofs the apiserver identity
+		// and may DELETE Flux-applied resources.
+		{
+			name:     "SA in a namespace named system cannot spoof system:apiserver",
+			username: "system:serviceaccount:system:apiserver",
+			groups:   []string{"system:serviceaccounts", "system:serviceaccounts:system", "system:authenticated"},
+			want:     false,
+		},
+		{
+			name:     "SA in a namespace named system cannot spoof system:kube-controller-manager",
+			username: "system:serviceaccount:system:kube-controller-manager",
+			groups:   []string{"system:serviceaccounts", "system:serviceaccounts:system", "system:authenticated"},
+			want:     false,
+		},
 	}
 
 	for _, tt := range tests {
