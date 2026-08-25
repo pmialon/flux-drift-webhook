@@ -288,7 +288,7 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 
 ## Prerequisites
 
-- Go 1.26.5
+- Go 1.26.6
 - Kubernetes 1.30+ (CEL `matchConditions` are GA from 1.30)
 - cert-manager installed in cluster
 - FluxCD installed in `flux-system` namespace
