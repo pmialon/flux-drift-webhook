@@ -183,5 +183,5 @@ verify-dirty:
 verify: fmt vet tidy generate lint verify-structure verify-build test verify-manifests verify-dirty
 	@echo "All verifications passed!"
 
-ci: verify verify-docker test-integration fuzz-smoketest
+ci: verify verify-docker test-integration fuzz-smoketest test-e2e
 	@echo "CI pipeline completed successfully!"

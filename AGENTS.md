@@ -25,7 +25,7 @@ make fuzz-smoketest  # smoke-test the native Go fuzz targets
 make lint            # golangci-lint (config: .golangci.yml)
 make fmt vet tidy    # format, vet, tidy (go.mod -compat=1.26)
 make verify          # fmt+vet+tidy+generate+lint+build+test+manifests, then a clean-tree check
-make ci              # full local gate (verify + verify-docker + test-integration + fuzz-smoketest)
+make ci              # full local gate (verify + verify-docker + test-integration + fuzz-smoketest + test-e2e)
 ```
 `make verify` must pass and leave a **clean git tree** before you open a pull request.
 

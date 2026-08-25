@@ -25,7 +25,7 @@ make lint            # golangci-lint
 make fmt vet tidy    # format, vet, and tidy go.mod (-compat=1.26)
 make verify          # full local gate: fmt+vet+tidy+generate+lint+build+test+manifests + clean-tree check
 make verify-docker   # build the image and smoke-test its --help entrypoint
-make ci              # local full-gate aggregate: verify + verify-docker + test-integration + fuzz-smoketest
+make ci              # local full-gate aggregate: verify + verify-docker + test-integration + fuzz-smoketest + test-e2e
 ```
 
 ## Tests
@@ -45,9 +45,11 @@ make ci              # local full-gate aggregate: verify + verify-docker + test-
 - Full end-to-end on a kind cluster: `make test-e2e`.
 
 ### CI gates
-On top of `make verify`, the pipeline adds `fuzz-smoketest`, `verify-codegen`, and the
-`test-integration` envtest gate. Locally, `make ci`
-is the full-gate aggregate (`verify` + `verify-docker` + `test-integration` + `fuzz-smoketest`).
+On top of `make verify`, the pipeline adds `fuzz-smoketest`, `verify-codegen`, the
+`test-integration` envtest gate, and the `e2e` kind job (audit + enforce suites — the only
+automated proof the webhook blocks). Releases are gated on a `test` job (vet, race tests,
+envtest) so a tag never publishes untested code. Locally, `make ci` is the full-gate aggregate
+(`verify` + `verify-docker` + `test-integration` + `fuzz-smoketest` + `test-e2e`).
 
 ## Helm chart
 A Helm chart in [`charts/flux-drift-webhook/`](charts/flux-drift-webhook) is an alternative to the

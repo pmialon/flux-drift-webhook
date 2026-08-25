@@ -15,7 +15,30 @@ permissions:
   contents: read
 
 jobs:
+  # A release must never sign and publish untested code: ci.yaml only triggers
+  # on pull requests and pushes to main, so a tag laid on a commit that failed
+  # CI — or was never covered by it (e.g. a hotfix branch) — would otherwise be
+  # built, cosign-signed and SLSA-attested as-is. The cheap, high-value gate:
+  # vet, the race-enabled unit tests and the envtest integration suite.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify structure and vet
+        run: make verify-structure vet
+      - name: Unit tests (race)
+        run: make test-race
+      - name: Integration tests (envtest)
+        run: make test-integration
+
   release:
+    needs: [test]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub release

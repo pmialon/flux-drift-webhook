@@ -470,7 +470,7 @@ make lint
 # kubeconform manifests, and a clean-tree check)
 make verify
 
-# Full local CI (verify + docker build + envtest integration + fuzz smoke test)
+# Full local CI (verify + docker build + envtest integration + fuzz smoke test + kind e2e)
 make ci
 ```
 
