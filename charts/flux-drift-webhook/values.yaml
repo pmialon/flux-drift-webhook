@@ -88,6 +88,13 @@ readinessProbe:
 
 nodeSelector: {}
 tolerations: []
+# -- PriorityClass for the webhook pods. Admission sits on the write path of
+# every Flux-labelled object; a priority class protects the pods from eviction
+# under node pressure. Empty = cluster default.
+priorityClassName: ""
+# -- Spread constraints (e.g. across zones). The default anti-affinity already
+# spreads across hosts; set this for stronger guarantees.
+topologySpreadConstraints: []
 # -- Affinity. When empty, the chart renders the base preferred podAntiAffinity
 # (spread replicas across hosts); set to override entirely.
 affinity: {}
@@ -124,6 +131,22 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
+# ValidatingWebhookConfiguration knobs. The chart renders these into the VWC
+# manifest AND passes them to the controller (which re-applies the VWC), so
+# both writers stay byte-identical — do not patch the VWC out-of-band instead.
+webhook:
+  # Ignore (default) fails open when the webhook is down: writes go through
+  # unchecked rather than the cluster wedging. Fail closes that gap at the
+  # price of blocking every write to Flux-labelled objects during an outage.
+  failurePolicy: Ignore
+  # Admission timeout (1-30s). The VWC default would be 10s; 3s keeps a slow
+  # webhook from stalling every write on the cluster.
+  timeoutSeconds: 3
+  # Extra namespaces excluded from interception, appended after the built-ins
+  # (kube-system, kube-public, kube-node-lease, the release namespace) — e.g.
+  # CI or ephemeral-preview namespaces.
+  extraExcludedNamespaces: []
+
 networkPolicy:
   enabled: true
   # -- Optional ingress peers allowed to reach the metrics and health ports
@@ -158,6 +181,8 @@ certManager:
     kind: Issuer
   certificate:
     secretName: ""   # defaults to "<fullname>-tls"
+    duration: ""     # e.g. "2160h" (90d); empty = cert-manager default
+    renewBefore: ""  # e.g. "360h" (15d); empty = cert-manager default
     privateKey:
       algorithm: ECDSA
       size: 256

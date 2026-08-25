@@ -12,3 +12,11 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/args/-
         value: --audit-only=true
+
+# Pin the deployed image: the base references :latest so the release pipeline
+# can retag it, but a deploy target must be reproducible — a floating tag means
+# a node reschedule can silently change versions mid-rollout. Keep in step with
+# the chart appVersion on each release.
+images:
+  - name: ghcr.io/pmialon/flux-drift-webhook
+    newTag: "0.2.0"

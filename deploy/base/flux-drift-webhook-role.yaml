@@ -1,0 +1,17 @@
+# Leader election, previously an unscoped cluster-wide grant on leases: a
+# namespaced Role confines it to the Flux namespace, and get/update to the one
+# lease the manager actually uses (LeaderElectionID). create cannot be
+# name-scoped — RBAC evaluates resourceNames after the name exists.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-drift-webhook-leader-election
+  namespace: flux-system
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["flux-drift-webhook-leader"]
+    verbs: ["get", "update"]

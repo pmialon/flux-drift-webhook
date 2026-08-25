@@ -62,6 +62,18 @@ type WebhookConfigReconciler struct {
 	WebhookPath string
 	// ResyncInterval is the requeue interval between re-applies.
 	ResyncInterval time.Duration
+	// FailurePolicy is applied to both webhook entries (--failure-policy).
+	// Empty defaults to Ignore — fail open on webhook outage, the safe
+	// degradation for a recreated VWC with no caBundle.
+	FailurePolicy admissionregistrationv1.FailurePolicyType
+	// TimeoutSeconds is applied to both webhook entries (--webhook-timeout).
+	// Zero defaults to 3.
+	TimeoutSeconds int32
+	// ExtraExcludedNamespaces are appended to the built-in namespaceSelector
+	// exclusions (--extra-excluded-namespaces), in the given order. The value
+	// must match the deployed manifest: the selector list is atomic under SSA,
+	// so a mismatch makes the two appliers churn.
+	ExtraExcludedNamespaces []string
 }
 
 // Reconcile applies the ValidatingWebhookConfiguration via server-side apply
@@ -163,7 +175,14 @@ func (r *WebhookConfigReconciler) buildWebhookEntry(
 	name, labelKey string, rules []admissionregistrationv1.RuleWithOperations,
 ) admissionregistrationv1.ValidatingWebhook {
 	sideEffects := admissionregistrationv1.SideEffectClassNone
-	failurePolicy := admissionregistrationv1.Ignore
+	failurePolicy := r.FailurePolicy
+	if failurePolicy == "" {
+		failurePolicy = admissionregistrationv1.Ignore
+	}
+	timeoutSeconds := r.TimeoutSeconds
+	if timeoutSeconds == 0 {
+		timeoutSeconds = 3
+	}
 	matchPolicy := admissionregistrationv1.Equivalent
 	return admissionregistrationv1.ValidatingWebhook{
 		Name:  name,
@@ -191,7 +210,7 @@ func (r *WebhookConfigReconciler) buildWebhookEntry(
 		},
 		FailurePolicy:           &failurePolicy,
 		MatchPolicy:             &matchPolicy,
-		TimeoutSeconds:          ptr(int32(3)),
+		TimeoutSeconds:          &timeoutSeconds,
 		SideEffects:             &sideEffects,
 		AdmissionReviewVersions: []string{"v1"},
 		MatchConditions:         matchConditions(),
@@ -199,13 +218,19 @@ func (r *WebhookConfigReconciler) buildWebhookEntry(
 }
 
 // excludedNamespaces returns the namespaces the webhook never intercepts: the
-// control-plane namespaces plus the webhook's own namespace (self-deadlock
-// avoidance). The order mirrors the deployed manifests — the values list is
-// atomic under SSA, so both appliers must produce the exact same value.
+// control-plane namespaces, the webhook's own namespace (self-deadlock
+// avoidance), then any operator-configured extras in their given order. The
+// order mirrors the deployed manifests — the values list is atomic under SSA,
+// so both appliers must produce the exact same value.
 func (r *WebhookConfigReconciler) excludedNamespaces() []string {
 	excluded := []string{"kube-system", "kube-public", "kube-node-lease"}
 	if r.WebhookNamespace != "" && !slices.Contains(excluded, r.WebhookNamespace) {
 		excluded = append(excluded, r.WebhookNamespace)
+	}
+	for _, ns := range r.ExtraExcludedNamespaces {
+		if ns != "" && !slices.Contains(excluded, ns) {
+			excluded = append(excluded, ns)
+		}
 	}
 	return excluded
 }

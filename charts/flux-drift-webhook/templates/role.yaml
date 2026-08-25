@@ -1,0 +1,38 @@
+{{- if .Values.rbac.create -}}
+# Leader election, previously an unscoped cluster-wide grant on leases: a
+# namespaced Role confines it to the release namespace, and get/update to the
+# one lease the manager actually uses (LeaderElectionID). create cannot be
+# name-scoped — RBAC evaluates resourceNames after the name exists.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "flux-drift-webhook.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    # PINNED to the controller's hard-coded LeaderElectionID.
+    resourceNames: ["flux-drift-webhook-leader"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "flux-drift-webhook.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flux-drift-webhook.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "flux-drift-webhook.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "flux-drift-webhook.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

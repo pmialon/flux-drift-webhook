@@ -7,3 +7,11 @@ resources:
 # No patch: the base already runs in enforce mode (--audit-only defaults to
 # false). This overlay previously appended --audit-only=true, which silently
 # turned `make deploy-prod` into an audit-only deployment that blocked nothing.
+
+# Pin the deployed image: the base references :latest so the release pipeline
+# can retag it, but a deploy target must be reproducible — a floating tag means
+# a node reschedule can silently change versions mid-rollout. Keep in step with
+# the chart appVersion on each release.
+images:
+  - name: ghcr.io/pmialon/flux-drift-webhook
+    newTag: "0.2.0"

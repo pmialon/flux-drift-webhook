@@ -20,6 +20,12 @@ metadata:
     {{- include "flux-drift-webhook.labels" . | nindent 4 }}
 spec:
   secretName: {{ include "flux-drift-webhook.tlsSecretName" . }}
+  {{- with .Values.certManager.certificate.duration }}
+  duration: {{ . }}
+  {{- end }}
+  {{- with .Values.certManager.certificate.renewBefore }}
+  renewBefore: {{ . }}
+  {{- end }}
   dnsNames:
     - {{ include "flux-drift-webhook.serviceName" . }}.{{ .Release.Namespace }}.svc
     - {{ include "flux-drift-webhook.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local

@@ -7,6 +7,8 @@ resources:
   - flux-drift-webhook-serviceaccount.yaml
   - flux-drift-webhook-clusterrole.yaml
   - flux-drift-webhook-clusterrolebinding.yaml
+  - flux-drift-webhook-role.yaml
+  - flux-drift-webhook-rolebinding.yaml
   - flux-drift-webhook-service.yaml
   - flux-drift-webhook-deployment.yaml
   - flux-drift-webhook-horizontalpodautoscaler.yaml

@@ -2,23 +2,53 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "flux-drift-webhook values",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
+  "definitions": {
+    "duration": {
+      "type": "string",
+      "pattern": "^$|^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration (e.g. \"5m\", \"2s\") or empty for the default"
+    },
+    "freeformObject": { "type": "object" }
+  },
   "properties": {
+    "global": { "$ref": "#/definitions/freeformObject" },
     "replicaCount": { "type": "integer", "minimum": 1 },
     "image": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": ["repository"],
       "properties": {
         "repository": { "type": "string", "minLength": 1 },
         "tag": { "type": "string" },
-        "digest": { "type": "string" },
+        "digest": { "type": "string", "pattern": "^$|^sha256:[a-f0-9]{64}$" },
         "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
       }
     },
+    "imagePullSecrets": { "type": "array", "items": { "$ref": "#/definitions/freeformObject" } },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "$ref": "#/definitions/freeformObject" }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "create": { "type": "boolean" } }
+    },
+    "podAnnotations": { "$ref": "#/definitions/freeformObject" },
+    "podLabels": { "$ref": "#/definitions/freeformObject" },
+    "podSecurityContext": { "$ref": "#/definitions/freeformObject" },
+    "securityContext": { "$ref": "#/definitions/freeformObject" },
     "service": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "type": { "type": "string" },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
@@ -27,58 +57,176 @@
     },
     "ports": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "webhook": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "metrics": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "health": { "type": "integer", "minimum": 1, "maximum": 65535 }
       }
     },
+    "resources": { "$ref": "#/definitions/freeformObject" },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gomaxprocs": { "type": "string", "pattern": "^[0-9]+$" },
+        "gomemlimit": { "type": "string", "pattern": "^[0-9]+(KiB|MiB|GiB|TiB|B)?$" }
+      }
+    },
+    "livenessProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+        "periodSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "readinessProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+        "periodSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "nodeSelector": { "$ref": "#/definitions/freeformObject" },
+    "tolerations": { "type": "array", "items": { "$ref": "#/definitions/freeformObject" } },
+    "priorityClassName": { "type": "string" },
+    "topologySpreadConstraints": { "type": "array", "items": { "$ref": "#/definitions/freeformObject" } },
+    "affinity": { "$ref": "#/definitions/freeformObject" },
     "autoscaling": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
         "minReplicas": { "type": "integer", "minimum": 1 },
         "maxReplicas": { "type": "integer", "minimum": 1 },
-        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Percentage of resources.requests.cpu, not of a core. Values above 100 are valid and expected here: with a 25m request and no CPU limit a pod can exceed its request many times over." }
+        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Percentage of resources.requests.cpu, not of a core. Values above 100 are valid and expected here: with a 25m request and no CPU limit a pod can exceed its request many times over." },
+        "behavior": { "$ref": "#/definitions/freeformObject" }
       }
     },
     "podDisruptionBudget": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
         "minAvailable": { "type": ["integer", "string"] }
       }
     },
+    "webhook": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "failurePolicy": { "type": "string", "enum": ["Ignore", "Fail"] },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 30 },
+        "extraExcludedNamespaces": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
     "networkPolicy": {
       "type": "object",
-      "additionalProperties": true,
-      "properties": { "enabled": { "type": "boolean" } }
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "metricsFrom": { "type": "array", "items": { "$ref": "#/definitions/freeformObject" } }
+      }
     },
     "podMonitor": {
       "type": "object",
-      "additionalProperties": true,
-      "properties": { "enabled": { "type": "boolean" } }
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "$ref": "#/definitions/duration" },
+        "path": { "type": "string" },
+        "additionalLabels": { "$ref": "#/definitions/freeformObject" }
+      }
+    },
+    "prometheusRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "additionalLabels": { "$ref": "#/definitions/freeformObject" }
+      }
     },
     "certManager": {
       "type": "object",
-      "additionalProperties": true,
-      "properties": { "enabled": { "type": "boolean" } }
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "issuer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "create": { "type": "boolean" },
+            "name": { "type": "string" },
+            "kind": { "type": "string", "enum": ["Issuer", "ClusterIssuer"] }
+          }
+        },
+        "certificate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": { "type": "string" },
+            "duration": { "$ref": "#/definitions/duration" },
+            "renewBefore": { "$ref": "#/definitions/duration" },
+            "privateKey": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "algorithm": { "type": "string", "enum": ["RSA", "ECDSA", "Ed25519"] },
+                "size": { "type": "integer" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "secretName": { "type": "string" },
+        "caBundle": { "type": "string" }
+      }
     },
     "config": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
+        "certDir": { "type": "string" },
         "auditOnly": { "type": "boolean" },
         "logEncoding": { "type": "string", "enum": ["json", "console"] },
         "logLevel": { "type": "string", "enum": ["", "trace", "debug", "info", "error"] },
         "leaderElection": {
           "type": "object",
-          "additionalProperties": true,
-          "properties": { "enabled": { "type": "boolean" } }
-        }
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "leaseDuration": { "$ref": "#/definitions/duration" },
+            "renewDeadline": { "$ref": "#/definitions/duration" },
+            "retryPeriod": { "$ref": "#/definitions/duration" }
+          }
+        },
+        "kubeApiQps": { "type": "string", "pattern": "^$|^[0-9]+(\\.[0-9]+)?$" },
+        "kubeApiBurst": { "type": "string", "pattern": "^$|^[0-9]+$" },
+        "fluxNamespace": { "type": "string" },
+        "webhookName": { "type": "string" },
+        "vwcResyncInterval": { "$ref": "#/definitions/duration" },
+        "discoveryInterval": { "$ref": "#/definitions/duration" },
+        "namespaceLabel": { "type": "string" },
+        "namespaceLabelValue": { "type": "string" },
+        "namespaceFetchTimeout": { "$ref": "#/definitions/duration" },
+        "systemControllerSas": { "type": "string" }
+      }
+    },
+    "extraArgs": { "type": "array", "items": { "type": "string" } },
+    "extraEnv": { "type": "array", "items": { "$ref": "#/definitions/freeformObject" } },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "type": "string", "minLength": 1 }
       }
     }
   }

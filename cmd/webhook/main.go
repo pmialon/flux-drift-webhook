@@ -60,21 +60,24 @@ func init() {
 
 func main() {
 	var (
-		webhookPort           int
-		metricsAddr           string
-		healthAddr            string
-		certDir               string
-		auditOnly             bool
-		fluxNamespace         string
-		webhookName           string
-		vwcResyncInterval     time.Duration
-		discoveryInterval     time.Duration
-		namespaceLabel        string
-		namespaceLabelValue   string
-		namespaceFetchTimeout time.Duration
-		systemControllerSAs   string
-		kubeAPIQPS            float32
-		kubeAPIBurst          int
+		webhookPort             int
+		metricsAddr             string
+		healthAddr              string
+		certDir                 string
+		auditOnly               bool
+		fluxNamespace           string
+		webhookName             string
+		vwcResyncInterval       time.Duration
+		discoveryInterval       time.Duration
+		namespaceLabel          string
+		namespaceLabelValue     string
+		namespaceFetchTimeout   time.Duration
+		systemControllerSAs     string
+		kubeAPIQPS              float32
+		kubeAPIBurst            int
+		failurePolicy           string
+		webhookTimeout          int32
+		extraExcludedNamespaces string
 
 		leaderElectionOptions leaderelection.Options
 		loggerOptions         logger.Options
@@ -108,6 +111,15 @@ func main() {
 			"merged with built-in defaults")
 	flag.Float32Var(&kubeAPIQPS, "kube-api-qps", 50.0, "The maximum queries-per-second of requests sent to the Kubernetes API.")
 	flag.IntVar(&kubeAPIBurst, "kube-api-burst", 300, "The maximum burst queries-per-second of requests sent to the Kubernetes API.")
+	flag.StringVar(&failurePolicy, "failure-policy", getEnv("FAILURE_POLICY", string(admissionregistrationv1.Ignore)),
+		"failurePolicy the controller applies to both VWC entries (Ignore or Fail); "+
+			"must match the deployed manifest or the two SSA appliers churn")
+	flag.Int32Var(&webhookTimeout, "webhook-timeout", 3,
+		"timeoutSeconds the controller applies to both VWC entries (1-30); must match the deployed manifest")
+	flag.StringVar(&extraExcludedNamespaces, "extra-excluded-namespaces", getEnv("EXTRA_EXCLUDED_NAMESPACES", ""),
+		"CSV of extra namespaces appended to the VWC namespaceSelector exclusion list "+
+			"(after kube-system, kube-public, kube-node-lease and the Flux namespace); "+
+			"must match the deployed manifest order")
 
 	leaderElectionOptions.BindFlags(flag.CommandLine)
 	loggerOptions.BindFlags(flag.CommandLine)
@@ -127,6 +139,18 @@ func main() {
 
 	if namespaceLabelValue != "" && namespaceLabel == "" {
 		log.Error(nil, "namespace-label-value requires namespace-label to be set")
+		os.Exit(1)
+	}
+
+	// Fail fast on invalid VWC knobs: the apiserver would reject the SSA apply
+	// at runtime, which with failurePolicy Ignore degrades to silent fail-open.
+	vwcFailurePolicy, err := parseFailurePolicy(failurePolicy)
+	if err != nil {
+		log.Error(err, "invalid --failure-policy")
+		os.Exit(1)
+	}
+	if webhookTimeout < 1 || webhookTimeout > 30 {
+		log.Error(nil, "invalid --webhook-timeout: must be between 1 and 30 seconds", "value", webhookTimeout)
 		os.Exit(1)
 	}
 
@@ -199,14 +223,17 @@ func main() {
 	}
 
 	if err := (&controller.WebhookConfigReconciler{
-		Client:           mgr.GetClient(),
-		Metrics:          m,
-		EventRecorder:    eventRecorder,
-		WebhookName:      webhookName,
-		WebhookNamespace: fluxNamespace,
-		WebhookService:   "flux-drift-webhook",
-		WebhookPath:      config.WebhookPath,
-		ResyncInterval:   vwcResyncInterval,
+		Client:                  mgr.GetClient(),
+		Metrics:                 m,
+		EventRecorder:           eventRecorder,
+		WebhookName:             webhookName,
+		WebhookNamespace:        fluxNamespace,
+		WebhookService:          "flux-drift-webhook",
+		WebhookPath:             config.WebhookPath,
+		ResyncInterval:          vwcResyncInterval,
+		FailurePolicy:           vwcFailurePolicy,
+		TimeoutSeconds:          webhookTimeout,
+		ExtraExcludedNamespaces: splitCSV(extraExcludedNamespaces),
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to setup webhook config controller")
 		os.Exit(1)
@@ -321,6 +348,31 @@ func resyncIntervalDefault() (time.Duration, error) {
 		return 0, err
 	}
 	return getEnvDuration("VWC_RESYNC_INTERVAL", legacy)
+}
+
+// parseFailurePolicy validates the --failure-policy flag value.
+func parseFailurePolicy(v string) (admissionregistrationv1.FailurePolicyType, error) {
+	switch admissionregistrationv1.FailurePolicyType(v) {
+	case admissionregistrationv1.Ignore:
+		return admissionregistrationv1.Ignore, nil
+	case admissionregistrationv1.Fail:
+		return admissionregistrationv1.Fail, nil
+	default:
+		return "", fmt.Errorf("must be %q or %q, got %q",
+			admissionregistrationv1.Ignore, admissionregistrationv1.Fail, v)
+	}
+}
+
+// splitCSV splits a comma-separated flag value into trimmed, non-empty tokens,
+// preserving their order (the VWC exclusion list is order-sensitive under SSA).
+func splitCSV(csv string) []string {
+	var out []string
+	for _, e := range strings.Split(csv, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // mergeSystemControllerSAs returns the built-in default control-plane service
