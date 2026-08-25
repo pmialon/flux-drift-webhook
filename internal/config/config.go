@@ -65,7 +65,10 @@ var fluxServiceAccounts = []string{
 // fluxReconcilerServiceAccounts are the impersonation service accounts used by
 // Flux in multi-tenant mode. Kustomizations reconcile tenant resources by
 // impersonating these SAs in the tenant namespace, so they are recognised as
-// owning Flux controllers regardless of their namespace.
+// owning Flux controllers — but only in the owning Kustomization/HelmRelease's
+// namespace (the namespace carried by the object's Flux labels); accepting the
+// name in any namespace would let a SA called "flux-reconciler" in an
+// attacker-controlled namespace bypass drift prevention.
 var fluxReconcilerServiceAccounts = []string{
 	"flux-reconciler",
 }

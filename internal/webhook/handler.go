@@ -304,8 +304,15 @@ func (h *DriftPreventionHandler) isOwningFluxReconciler(
 	}
 
 	// Fallback when the owner cannot be read or sets no serviceAccountName:
-	// recognise well-known reconciler SA names in any namespace.
-	return slices.Contains(config.FluxReconcilerServiceAccounts(), saName)
+	// recognise well-known reconciler SA names, bound to the owner's
+	// namespace. In Flux multi-tenancy the impersonated reconciler SA always
+	// lives in the namespace of the owning Kustomization/HelmRelease, and
+	// ControllerNS comes from the object's labels — not from reading the
+	// owner — so the binding costs nothing even when the owner is unreadable.
+	// Without it, a SA named "flux-reconciler" in ANY namespace an attacker
+	// controls would count as the owning reconciler.
+	return saNamespace == fluxInfo.ControllerNS &&
+		slices.Contains(config.FluxReconcilerServiceAccounts(), saName)
 }
 
 // owningReconcilerSA reads .spec.serviceAccountName from the owning

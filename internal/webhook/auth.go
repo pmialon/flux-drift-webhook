@@ -80,5 +80,23 @@ func IsSystemController(userInfo authenticationv1.UserInfo, entries []string) bo
 	if !ok {
 		return false
 	}
-	return slices.Contains(entries, ns+":"+name)
+	// The inverse guard: a namespace:name shorthand must never match a
+	// full-username entry. "system" is a legal, unreserved namespace name, so
+	// a ServiceAccount named "apiserver" in a namespace named "system" renders
+	// the shorthand "system:apiserver" — a default full-username entry — and
+	// would otherwise be treated as the apiserver itself. Entries carrying the
+	// reserved "system:" prefix are therefore skipped when comparing against
+	// the shorthand (built-in shorthands are all "kube-system:…"; the
+	// consequence is that a namespace literally named "system" cannot be
+	// allow-listed via --system-controller-sas shorthand).
+	shorthand := ns + ":" + name
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, "system:") {
+			continue
+		}
+		if entry == shorthand {
+			return true
+		}
+	}
+	return false
 }

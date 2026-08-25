@@ -979,9 +979,17 @@ func TestIsOwningFluxReconciler(t *testing.T) {
 		{"impersonated SA matches owner serviceAccountName", saUser("system:serviceaccount:kafka:flux-reconciler"), kafka, true},
 		{"other SA in tenant namespace rejected (owner SA known)", saUser("system:serviceaccount:kafka:evil"), kafka, false},
 		{"matching SA name but wrong namespace rejected", saUser("system:serviceaccount:other:flux-reconciler"), kafka, false},
-		{"owner unreadable, SA in static fallback list", saUser("system:serviceaccount:tenant:flux-reconciler"), missing, true},
-		{"owner unreadable, SA not in fallback list", saUser("system:serviceaccount:tenant:random"), missing, false},
-		{"owner without serviceAccountName falls back, fallback matches", saUser("system:serviceaccount:redis:flux-reconciler"), redis, true},
+		// The fallback is bound to the owner's namespace (from the object's
+		// labels, so it is known even when the owner itself is unreadable):
+		// a reconciler-named SA in any other namespace must not qualify, or
+		// creating a "flux-reconciler" SA in an attacker-controlled namespace
+		// bypasses drift prevention for every resource whose owner sets no
+		// .spec.serviceAccountName.
+		{"owner unreadable, fallback SA in owner namespace", saUser("system:serviceaccount:ghost:flux-reconciler"), missing, true},
+		{"owner unreadable, fallback SA in foreign namespace rejected", saUser("system:serviceaccount:tenant:flux-reconciler"), missing, false},
+		{"owner unreadable, SA not in fallback list", saUser("system:serviceaccount:ghost:random"), missing, false},
+		{"owner without serviceAccountName falls back, fallback matches in owner namespace", saUser("system:serviceaccount:redis:flux-reconciler"), redis, true},
+		{"owner without serviceAccountName, fallback SA in foreign namespace rejected", saUser("system:serviceaccount:evil-ns:flux-reconciler"), redis, false},
 		{"owner without serviceAccountName falls back, no match", saUser("system:serviceaccount:redis:random"), redis, false},
 		{"non service account rejected", authenticationv1.UserInfo{Username: "admin@example.com"}, kafka, false},
 	}

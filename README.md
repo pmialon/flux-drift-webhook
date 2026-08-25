@@ -244,7 +244,9 @@ account. The webhook resolves the legitimate identity dynamically: it reads
 `.spec.serviceAccountName` from the owning Kustomization/HelmRelease and accepts
 `system:serviceaccount:<owner-ns>:<that-sa>`. If the owner cannot be read or sets
 no service account, it falls back to the built-in names (default
-`flux-reconciler`).
+`flux-reconciler`) — accepted **only in the owner's namespace** (the namespace
+carried by the object's Flux labels), so a look-alike service account in any
+other namespace does not qualify.
 
 #### 2. Bypass Annotation
 
