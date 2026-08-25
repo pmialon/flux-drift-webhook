@@ -445,6 +445,22 @@ scrape actually works; the chart can restrict the allowed peers via `networkPoli
 - `/healthz` — Liveness probe
 - `/readyz` — Readiness probe. Green only once **both** the TLS listener is serving and the informer caches have completed their initial sync. The cache gate matters: controller-runtime starts the webhook server before the caches, and the cache-backed checks (namespace-terminating cascade, CREATE owner inventory, tenant service-account resolution) are fail-closed — without it the pod would deny legitimate requests during its cold start
 
+### Resource Sizing
+
+The webhook's informer caches are cluster-wide, so memory grows with the GitOps estate — every
+Namespace, every Kustomization/HelmRelease (whose `.status.inventory` enumerates each object Flux
+manages). To keep that footprint bounded, the cache stores only what the handler reads:
+Kustomizations/HelmReleases are stripped to `.spec.serviceAccountName`, `.spec.ignore` and
+`.status.inventory`; Namespaces are watched metadata-only; `managedFields` never enter the cache.
+
+The shipped defaults (`requests.memory: 64Mi`, `limits.memory: 128Mi`, `GOMEMLIMIT=100MiB`) are
+sized for clusters up to a few thousand namespaces and a few hundred Kustomizations with
+moderate inventories. On larger estates — very large inventories are the dominant term — raise
+`resources.limits.memory` **and** `runtime.gomemlimit` together (keep GOMEMLIMIT ~25Mi below the
+limit; see the comment in the chart's `values.yaml`), and watch the pods' RSS after rollout. An
+OOM-killed webhook fails open silently (`failurePolicy: Ignore`), which is exactly what the
+`FluxDriftWebhookDown` alert exists to catch.
+
 ## Development
 
 ### Project Structure

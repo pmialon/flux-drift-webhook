@@ -2004,6 +2004,14 @@ func TestCachedObjectTypes(t *testing.T) {
 			t.Errorf("CachedObjectTypes()[%d] = %v, want %v", i, gvk, want[i])
 		}
 	}
+
+	// The namespace entry must be PartialObjectMetadata, not corev1.Namespace:
+	// the handler reads namespaces metadata-only, and pre-warming a full-object
+	// informer would sync a cache the handler never reads while every
+	// namespace's spec/status sits in memory.
+	if _, ok := objs[0].(*metav1.PartialObjectMetadata); !ok {
+		t.Errorf("CachedObjectTypes()[0] = %T, want *metav1.PartialObjectMetadata (metadata-only namespace informer)", objs[0])
+	}
 }
 
 // TestHandle_ExcludedGroupAllowed covers the self-lockout guard. A
