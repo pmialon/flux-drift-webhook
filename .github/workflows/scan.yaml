@@ -1,0 +1,42 @@
+name: scan
+
+# Nothing re-examines a published image once it ships: a CVE disclosed after a
+# release — in the static binary's dependencies or the (digest-pinned)
+# distroless base — would go unnoticed until the next tag. This weekly scan
+# closes that gap for a security product whose failure mode is silence.
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image-cve-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Scan the published image (HIGH/CRITICAL, fixed only)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/flux-drift-webhook:latest
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - name: Open an issue on findings (deduplicated)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "CVE scan: HIGH/CRITICAL findings in the published image"
+        run: |
+          existing=$(gh issue list -R "${{ github.repository }}" --state open \
+            --search "in:title \"${TITLE}\"" --json number --jq 'length')
+          if [ "${existing}" = "0" ]; then
+            gh issue create -R "${{ github.repository }}" \
+              --title "${TITLE}" \
+              --body "The weekly Trivy scan of \`ghcr.io/${{ github.repository_owner }}/flux-drift-webhook:latest\` found fixable HIGH/CRITICAL vulnerabilities. See the run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} — cut a release from an updated dependency set (Dependabot bumps the digest-pinned bases) to clear it."
+          fi

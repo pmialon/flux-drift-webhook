@@ -409,29 +409,34 @@ Two third-party manifests are **committed** under `e2e/` so the suite runs offli
 
 ## CI/CD Pipeline
 
-Two GitHub Actions workflows live in `.github/workflows/`.
+Three GitHub Actions workflows live in `.github/workflows/`.
 
 **`ci.yaml`** runs on every pull request and push to `main`:
 
 | Job | Purpose |
 |-----|---------|
 | `lint` | `golangci-lint` with `.golangci.yml` (gosec runs as a configured linter) |
-| `test` | `go vet`, `gofmt` check, unit tests with `-race` and coverage |
+| `test` | `go vet`, `gofmt` check, unit tests with `-race` and coverage, `govulncheck` (symbol-level CVE scan) |
 | `verify-codegen` | fails if `go mod tidy` / `go generate` leave the tree dirty |
 | `fuzz` | `make fuzz-smoketest` (native Go fuzz targets) |
-| `integration` | `make test-integration` (envtest against a real apiserver) |
+| `integration` | `make test-integration` (envtest against a real apiserver), matrixed over `ENVTEST_K8S_VERSION` 1.30.3 (the declared floor) and 1.36.0 |
 | `manifests` | `kubeconform` validation of `deploy/base` and both overlays |
 | `helm` | `helm lint` plus rendered-template `kubeconform` validation |
 | `e2e` | `make test-e2e` (kind cluster, audit suite then enforce suite — the only automated proof the webhook blocks) |
 | `build` | multi-arch container image build (`linux/amd64,linux/arm64`), no push |
 
+**`scan.yaml`** runs weekly (cron) and on demand: Trivy scans the **published** `:latest` image for fixable HIGH/CRITICAL CVEs — the post-release gap nothing else covers — and opens a deduplicated issue on findings.
+
 **`release.yaml`** runs on `v*` tags: a `test` job (vet, race-enabled unit tests, envtest
 integration suite) gates the `release` job — a tag on an untested commit is never signed or
 published. It then builds and pushes a multi-arch image to
 `ghcr.io/pmialon/flux-drift-webhook` (with SBOM and build provenance), signs it with cosign
-(keyless, GitHub OIDC), generates SLSA provenance, publishes the Helm chart as an OCI artefact to
+(keyless, GitHub OIDC), generates SLSA provenance, publishes **and cosign-signs** the Helm chart as an OCI artefact to
 `oci://ghcr.io/pmialon/charts`, and creates a GitHub release via GoReleaser (source archive, SBOM,
-checksums, release notes).
+checksums, release notes). A guard step refuses to release when `Chart.yaml` (or an overlay image
+pin) does not track the tag, and the Dockerfile base images are digest-pinned so the SLSA
+provenance attests inputs that cannot drift. The old `workflow_dispatch` dry-run trigger was
+removed (it never worked: a branch dispatch produced zero image tags and failed the push).
 
 Jobs are wired to the `make` targets above, so the local `make verify` / `make ci` gate mirrors CI.
 

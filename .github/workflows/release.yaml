@@ -4,12 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "image tag prefix for a dry run"
-        default: "rc"
-        required: true
 
 permissions:
   contents: read
@@ -56,6 +50,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Assert the chart and overlays track the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          chart_version=$(awk '/^version:/ {print $2}' charts/flux-drift-webhook/Chart.yaml)
+          if [ "${chart_version}" != "${version}" ]; then
+            echo "Chart.yaml version=${chart_version} does not match tag ${GITHUB_REF_NAME}: bump version/appVersion before tagging" >&2
+            exit 1
+          fi
+          for overlay in deploy/overlays/dev deploy/overlays/prod; do
+            pinned=$(awk '/newTag:/ {gsub(/"/, "", $2); print $2}' "${overlay}/kustomization.yaml")
+            if [ -n "${pinned}" ] && [ "${pinned}" != "${version}" ]; then
+              echo "${overlay} pins image tag ${pinned}, expected ${version}" >&2
+              exit 1
+            fi
+          done
       - name: Setup QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - name: Setup Docker Buildx
@@ -118,13 +127,18 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish Helm chart (OCI)
+      - name: Publish and sign Helm chart (OCI)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           version="${GITHUB_REF_NAME#v}"
           helm package --version "${version}" --app-version "${version}" charts/flux-drift-webhook
           helm registry login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
-          helm push "flux-drift-webhook-${version}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+          push_output=$(helm push "flux-drift-webhook-${version}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts" 2>&1)
+          echo "${push_output}"
+          digest=$(echo "${push_output}" | awk '/Digest:/ {print $2}')
+          test -n "${digest}" || { echo "could not extract the chart digest from helm push output" >&2; exit 1; }
+          cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/flux-drift-webhook@${digest}"
 
   provenance:
     needs: [release]
