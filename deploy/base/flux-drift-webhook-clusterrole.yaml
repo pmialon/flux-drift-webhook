@@ -8,10 +8,13 @@ rules:
   # client still needs this to map the types it reads.
   - nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*"]
     verbs: ["get"]
-  # ValidatingWebhookConfiguration management
+  # ValidatingWebhookConfiguration management. `create` is required by the
+  # from-scratch recreation path: server-side apply of a missing object is
+  # authorized as a create, so without it the controller cannot restore a VWC
+  # deleted out-of-band (the apply fails Forbidden and protection stays off).
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["validatingwebhookconfigurations"]
-    verbs: ["get", "list", "watch", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   # Leader election
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

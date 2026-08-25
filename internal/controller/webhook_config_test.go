@@ -104,6 +104,40 @@ func TestReconcile_Success(t *testing.T) {
 			t.Errorf("entry %s: expected %d match conditions, got %d",
 				wh.Name, len(config.ExcludedGroups()), len(wh.MatchConditions))
 		}
+		// The safety-critical fields must be part of the apply: a VWC recreated
+		// from scratch after an out-of-band delete would otherwise get the
+		// apiserver defaults (failurePolicy Fail, timeout 10s, no
+		// namespaceSelector) and, with no caBundle, fail closed cluster-wide.
+		if wh.FailurePolicy == nil || *wh.FailurePolicy != admissionregistrationv1.Ignore {
+			t.Errorf("entry %s: FailurePolicy = %v, want Ignore", wh.Name, wh.FailurePolicy)
+		}
+		if wh.TimeoutSeconds == nil || *wh.TimeoutSeconds != 3 {
+			t.Errorf("entry %s: TimeoutSeconds = %v, want 3", wh.Name, wh.TimeoutSeconds)
+		}
+		if wh.MatchPolicy == nil || *wh.MatchPolicy != admissionregistrationv1.Equivalent {
+			t.Errorf("entry %s: MatchPolicy = %v, want Equivalent", wh.Name, wh.MatchPolicy)
+		}
+		if wh.NamespaceSelector == nil || len(wh.NamespaceSelector.MatchExpressions) != 1 {
+			t.Errorf("entry %s: expected a namespaceSelector with 1 matchExpression", wh.Name)
+		} else {
+			nsExpr := wh.NamespaceSelector.MatchExpressions[0]
+			if nsExpr.Key != "kubernetes.io/metadata.name" || nsExpr.Operator != metav1.LabelSelectorOpNotIn {
+				t.Errorf("entry %s: namespaceSelector = %s %s, want NotIn on kubernetes.io/metadata.name",
+					wh.Name, nsExpr.Key, nsExpr.Operator)
+			}
+			// Order matters: the values list is atomic under SSA, so it must
+			// mirror the deployed manifests exactly or the two appliers churn.
+			wantNS := []string{"kube-system", "kube-public", "kube-node-lease", "flux-system"}
+			if len(nsExpr.Values) != len(wantNS) {
+				t.Errorf("entry %s: namespaceSelector values = %v, want %v", wh.Name, nsExpr.Values, wantNS)
+			} else {
+				for i, ns := range wantNS {
+					if nsExpr.Values[i] != ns {
+						t.Errorf("entry %s: namespaceSelector values[%d] = %q, want %q", wh.Name, i, nsExpr.Values[i], ns)
+					}
+				}
+			}
+		}
 		if wh.ObjectSelector == nil || len(wh.ObjectSelector.MatchExpressions) != 1 {
 			t.Errorf("entry %s: expected an objectSelector with 1 matchExpression", wh.Name)
 			continue
@@ -155,6 +189,102 @@ func TestReconcile_EmitsConfigUpdatedEvent(t *testing.T) {
 		}
 	default:
 		t.Error("expected a ConfigUpdated event to be emitted, got none")
+	}
+
+	// Steady state must not warn: the VWC existed before the apply.
+	select {
+	case ev := <-recorder.Events:
+		t.Errorf("expected no further event when the VWC already exists, got %q", ev)
+	default:
+	}
+}
+
+// A VWC deleted out-of-band is recreated by the reconciler, but without the
+// cert-manager caBundle annotation (manifest-only) admission calls fail TLS.
+// That window is fail-open only because the apply carries failurePolicy Ignore,
+// and it must be observable: the reconciler emits a Warning event.
+func TestReconcile_RecreationEmitsWarning(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = admissionregistrationv1.AddToScheme(scheme)
+
+	// No pre-existing VWC: this reconcile recreates it from scratch.
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	m := metrics.NewMetricsWithRegistry(prometheus.NewRegistry())
+	recorder := record.NewFakeRecorder(10)
+
+	r := &WebhookConfigReconciler{
+		Client:           fakeClient,
+		Metrics:          m,
+		EventRecorder:    recorder,
+		WebhookName:      "test-webhook",
+		WebhookNamespace: "flux-system",
+		WebhookService:   "flux-drift-webhook",
+		WebhookPath:      "/validate",
+		ResyncInterval:   5 * time.Minute,
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-webhook"},
+	}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	select {
+	case ev := <-recorder.Events:
+		if !strings.Contains(ev, "Warning ConfigRecreated") {
+			t.Errorf("expected a Warning ConfigRecreated event first, got %q", ev)
+		}
+	default:
+		t.Fatal("expected a ConfigRecreated event on from-scratch recreation, got none")
+	}
+
+	// The recreated object must carry the fail-open safety defaults.
+	var vwc admissionregistrationv1.ValidatingWebhookConfiguration
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "test-webhook"}, &vwc); err != nil {
+		t.Fatalf("failed to get recreated VWC: %v", err)
+	}
+	for _, wh := range vwc.Webhooks {
+		if wh.FailurePolicy == nil || *wh.FailurePolicy != admissionregistrationv1.Ignore {
+			t.Errorf("recreated entry %s: FailurePolicy = %v, want Ignore (fail-open without a caBundle)",
+				wh.Name, wh.FailurePolicy)
+		}
+		if wh.NamespaceSelector == nil {
+			t.Errorf("recreated entry %s: no namespaceSelector — system namespaces would be intercepted", wh.Name)
+		}
+	}
+}
+
+// The webhook's own namespace joins the exclusion list exactly once, appended
+// after the control-plane trio so the value matches the deployed manifests.
+func TestExcludedNamespaces(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		want      []string
+	}{
+		{"flux-system appended", "flux-system",
+			[]string{"kube-system", "kube-public", "kube-node-lease", "flux-system"}},
+		{"custom namespace appended", "webhook-system",
+			[]string{"kube-system", "kube-public", "kube-node-lease", "webhook-system"}},
+		{"control-plane namespace not duplicated", "kube-system",
+			[]string{"kube-system", "kube-public", "kube-node-lease"}},
+		{"empty namespace ignored", "",
+			[]string{"kube-system", "kube-public", "kube-node-lease"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &WebhookConfigReconciler{WebhookNamespace: tt.namespace}
+			got := r.excludedNamespaces()
+			if len(got) != len(tt.want) {
+				t.Fatalf("excludedNamespaces() = %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("excludedNamespaces()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }
 

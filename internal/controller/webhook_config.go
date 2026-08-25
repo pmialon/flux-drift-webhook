@@ -19,10 +19,12 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,6 +79,18 @@ func (r *WebhookConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request)
 
 	rules := wildcardRules()
 
+	// A VWC deleted out-of-band is rebuilt from scratch by the apply below,
+	// but the cert-manager inject-ca-from annotation only lives in the
+	// deployed manifest (see buildWebhookEntry), so the recreated object has
+	// no caBundle and every admission call fails TLS — fail-open under the
+	// failurePolicy Ignore this controller applies. Detect that case and
+	// surface it: it is invisible otherwise.
+	recreating := false
+	if err := r.Get(ctx, client.ObjectKey{Name: r.WebhookName},
+		&admissionregistrationv1.ValidatingWebhookConfiguration{}); apierrors.IsNotFound(err) {
+		recreating = true
+	}
+
 	// SSA merges by webhook entry name, so they must match the deployed manifest
 	vwc := &admissionregistrationv1.ValidatingWebhookConfiguration{
 		TypeMeta: metav1.TypeMeta{
@@ -111,6 +125,12 @@ func (r *WebhookConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request)
 	}
 
 	r.Metrics.RecordConfigUpdate("success")
+	if recreating {
+		r.event(ref, corev1.EventTypeWarning, "ConfigRecreated",
+			"ValidatingWebhookConfiguration %s was absent and has been recreated without the cert-manager caBundle annotation; "+
+				"admission calls fail TLS (fail-open under failurePolicy Ignore) until the deployment manifest is reapplied", r.WebhookName)
+		log.Info("recreated absent ValidatingWebhookConfiguration; reapply the deployment manifest to restore the cert-manager annotation")
+	}
 	r.event(ref, corev1.EventTypeNormal, "ConfigUpdated", "updated ValidatingWebhookConfiguration with %d rules", len(rules))
 	log.V(1).Info("updated ValidatingWebhookConfiguration", "rulesCount", len(rules))
 
@@ -124,10 +144,27 @@ func (r *WebhookConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request)
 // sparing every unrelated write a webhook round-trip. The selector matches the
 // old OR the new object on UPDATE/DELETE, so label stripping cannot dodge
 // interception; the in-handler label gate remains as defence in depth.
+// The safety-critical fields (failurePolicy, timeoutSeconds, namespaceSelector,
+// matchPolicy) are applied here IN ADDITION to being shipped in the deployed
+// manifests, with identical values so both SSA appliers converge without churn.
+// They must be part of the apply because the controller recreates a deleted VWC
+// from scratch: without them the recreated object would get the apiserver
+// defaults — failurePolicy Fail, timeout 10s, no namespaceSelector — and, with
+// no caBundle, deny every write to every Flux-labelled object cluster-wide.
+//
+// The cert-manager inject-ca-from annotation is deliberately NOT applied: the
+// Certificate name is deployment-specific (the Helm chart derives it from the
+// release fullname, and cert-manager may be absent entirely when a static
+// caBundle is used), so the controller cannot know it reliably. With
+// failurePolicy Ignore applied here, a recreated-without-caBundle VWC is
+// fail-open — the safe degradation — until the manifest is reapplied; the
+// ConfigRecreated Warning event makes that window observable.
 func (r *WebhookConfigReconciler) buildWebhookEntry(
 	name, labelKey string, rules []admissionregistrationv1.RuleWithOperations,
 ) admissionregistrationv1.ValidatingWebhook {
 	sideEffects := admissionregistrationv1.SideEffectClassNone
+	failurePolicy := admissionregistrationv1.Ignore
+	matchPolicy := admissionregistrationv1.Equivalent
 	return admissionregistrationv1.ValidatingWebhook{
 		Name:  name,
 		Rules: rules,
@@ -138,15 +175,39 @@ func (r *WebhookConfigReconciler) buildWebhookEntry(
 				Path:      &r.WebhookPath,
 			},
 		},
+		NamespaceSelector: &metav1.LabelSelector{
+			MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      "kubernetes.io/metadata.name",
+					Operator: metav1.LabelSelectorOpNotIn,
+					Values:   r.excludedNamespaces(),
+				},
+			},
+		},
 		ObjectSelector: &metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{
 				{Key: labelKey, Operator: metav1.LabelSelectorOpExists},
 			},
 		},
+		FailurePolicy:           &failurePolicy,
+		MatchPolicy:             &matchPolicy,
+		TimeoutSeconds:          ptr(int32(3)),
 		SideEffects:             &sideEffects,
 		AdmissionReviewVersions: []string{"v1"},
 		MatchConditions:         matchConditions(),
 	}
+}
+
+// excludedNamespaces returns the namespaces the webhook never intercepts: the
+// control-plane namespaces plus the webhook's own namespace (self-deadlock
+// avoidance). The order mirrors the deployed manifests — the values list is
+// atomic under SSA, so both appliers must produce the exact same value.
+func (r *WebhookConfigReconciler) excludedNamespaces() []string {
+	excluded := []string{"kube-system", "kube-public", "kube-node-lease"}
+	if r.WebhookNamespace != "" && !slices.Contains(excluded, r.WebhookNamespace) {
+		excluded = append(excluded, r.WebhookNamespace)
+	}
+	return excluded
 }
 
 // matchConditions returns the CEL pre-filters carrying the API-group exclusions,

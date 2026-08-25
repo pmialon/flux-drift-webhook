@@ -117,13 +117,67 @@ func TestIntegration_Reconcile_SSA(t *testing.T) {
 	g.Expect(hasApplyManager(got.ManagedFields, "flux-drift-webhook")).To(BeTrue(),
 		"expected an Apply managedFields entry for fieldManager flux-drift-webhook")
 
-	// apiserver defaulting accepted and defaulted the object (the fake client
-	// never defaults): matchPolicy and timeoutSeconds receive server defaults.
-	g.Expect(wh.MatchPolicy).NotTo(BeNil())
-	g.Expect(wh.TimeoutSeconds).NotTo(BeNil())
+	// The safety-critical fields are applied (not left to apiserver defaulting)
+	// and survive the round-trip on both entries: a from-scratch recreation
+	// must never end up with failurePolicy Fail / timeout 10s / no
+	// namespaceSelector, which would fail closed cluster-wide without a
+	// caBundle.
+	for _, entry := range got.Webhooks {
+		g.Expect(entry.FailurePolicy).To(HaveValue(Equal(admissionregistrationv1.Ignore)), "entry %s", entry.Name)
+		g.Expect(entry.TimeoutSeconds).To(HaveValue(Equal(int32(3))), "entry %s", entry.Name)
+		g.Expect(entry.MatchPolicy).To(HaveValue(Equal(admissionregistrationv1.Equivalent)), "entry %s", entry.Name)
+		g.Expect(entry.NamespaceSelector).NotTo(BeNil(), "entry %s must carry a namespaceSelector", entry.Name)
+		g.Expect(entry.NamespaceSelector.MatchExpressions).To(HaveLen(1), "entry %s", entry.Name)
+		g.Expect(entry.NamespaceSelector.MatchExpressions[0].Values).To(
+			Equal([]string{"kube-system", "kube-public", "kube-node-lease", "flux-system"}), "entry %s", entry.Name)
+	}
 
 	// A Normal ConfigUpdated event was emitted (Phase 3 event recorder).
 	g.Eventually(rec.Events).Should(Receive(ContainSubstring("Normal ConfigUpdated")))
+}
+
+// TestIntegration_Reconcile_FromScratchRecreation exercises the recovery path
+// after an out-of-band `kubectl delete vwc`: the reconciler recreates the
+// object with the fail-open safety defaults (the apiserver would otherwise
+// default failurePolicy to Fail — a cluster-wide lockout with no caBundle) and
+// emits a Warning so the degraded window is observable.
+func TestIntegration_Reconcile_FromScratchRecreation(t *testing.T) {
+	g := NewWithT(t)
+	ctx := ctrl.LoggerInto(context.Background(), testr.New(t))
+	// Deliberately NOT seeded: the VWC does not exist yet.
+	t.Cleanup(func() {
+		vwc := &admissionregistrationv1.ValidatingWebhookConfiguration{
+			ObjectMeta: metav1.ObjectMeta{Name: itWebhookName},
+		}
+		g.Expect(client.IgnoreNotFound(k8sClient.Delete(context.Background(), vwc))).To(Succeed())
+	})
+
+	rec := record.NewFakeRecorder(16)
+	r := newReconciler(t, rec)
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: itWebhookName},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Eventually(rec.Events).Should(Receive(ContainSubstring("Warning ConfigRecreated")))
+
+	var got admissionregistrationv1.ValidatingWebhookConfiguration
+	g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: itWebhookName}, &got)).To(Succeed())
+	for _, entry := range got.Webhooks {
+		g.Expect(entry.FailurePolicy).To(HaveValue(Equal(admissionregistrationv1.Ignore)),
+			"recreated entry %s must fail open", entry.Name)
+		g.Expect(entry.NamespaceSelector).NotTo(BeNil(),
+			"recreated entry %s must keep system namespaces exempt", entry.Name)
+	}
+
+	// Second pass: the VWC now exists, so no further recreation warning.
+	_, err = r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: itWebhookName},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Eventually(rec.Events).Should(Receive(ContainSubstring("Normal ConfigUpdated")))
+	g.Consistently(rec.Events).ShouldNot(Receive(ContainSubstring("ConfigRecreated")))
 }
 
 // TestIntegration_Reconcile_ForceOwnershipIdempotent proves the SSA path is
