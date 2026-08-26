@@ -350,7 +350,7 @@ A `//go:build integration` suite lives in `internal/controller/{suite_test.go, w
 
 Run against a live cluster with the webhook in **enforce** mode and Flux installed (`make test-enforce`). `test-webhook.sh` only ever checks that a warning was emitted — audit mode refuses nothing — so this is the only suite that proves the webhook **blocks**. It asserts both that the API server rejects the request and that the refusal names the expected decision, so a rejection from an unrelated cause (RBAC, validation) cannot pass for a success.
 
-Fixtures are suspended Kustomizations with a hand-written `.status.inventory`. The webhook only reads that field, so its provenance is irrelevant, and suspending stops kustomize-controller reconciling it away — which keeps the suite offline, with no Git or OCI source. Objects that Flux "applied" are created by impersonating `system:serviceaccount:flux-system:kustomize-controller`; the identity matters as much as the field manager, since an inventory-declared id may only be created by Flux itself (that is E3).
+Fixtures are suspended Kustomizations — and, for the H tests, a suspended HelmRelease — with a hand-written `.status.inventory`. The webhook only reads that field, so its provenance is irrelevant, and suspending stops kustomize-controller reconciling it away — which keeps the suite offline, with no Git or OCI source. Objects that Flux "applied" are created by impersonating `system:serviceaccount:flux-system:kustomize-controller` (or `helm-controller` for the H tests); the identity matters as much as the field manager, since an inventory-declared id may only be created by Flux itself (that is E3/H3).
 
 | Test | Decision path | Assertion |
 |------|--------------|-----------|
@@ -367,6 +367,12 @@ Fixtures are suspended Kustomizations with a hand-written `.status.inventory`. T
 | E11 | `allowed_subresource` | The same change through the `scale` subresource is allowed |
 | E12 | `allowed_no_field_conflict` | Adding an annotation key Flux never declared is allowed |
 | E13 | `denied_update_flux_managed_fields` | Changing an annotation key Flux **did** declare is **rejected** |
+| H1 | `denied_update_flux_managed_fields` | Manual edit of a **helm**-owned field is **rejected** |
+| H2 | `denied_delete_flux_managed` | Manual delete of a **helm**-applied resource is **rejected** |
+| H3 | `denied_create_flux_labels` | CREATE of an id declared in the **HelmRelease** inventory is **rejected** |
+| H4 | `allowed_not_in_owner_inventory` | CREATE of an id absent from the HelmRelease inventory is allowed |
+
+H1–H4 replay E1–E4 with HelmRelease labels and the helm-controller identity/field manager against a **real** HelmRelease CRD — previously the helm paths (hardcoded owner GVK `helm.toolkit.fluxcd.io/v2`, manager-name suffix matching) were only ever validated against fake clients that store any GVK; a wrong hardcoded API version would have disabled the entire helm side silently.
 
 E9–E13 run against **podinfo** (vendored under `e2e/podinfo`, pinned by `PODINFO_VERSION`, labelled by the `e2e/podinfo-flux` overlay). It is the right fixture for free: its Deployment declares no `.spec.replicas` — the shape the README prescribes so an autoscaler can own that field — and it ships an HPA alongside, so the headline field-level case is testable without inventing a workload. E10 is the README's central promise and nothing exercised it end to end before.
 
@@ -391,10 +397,11 @@ Run against a live cluster with the webhook in audit-only mode (`make test-webho
 | T5 | `allowed_no_flux_managed_fields` (UPDATE) | No audit warning |
 | T6 | `denied_delete_flux_managed` (genuinely Flux-applied via SSA `kustomize-controller`) | Audit warning present |
 | T6b | `allowed_no_flux_managed_fields` (DELETE of inherited-label resource) | No audit warning |
+| T6h | `denied_delete_flux_managed` (helm-applied via SSA `helm-controller`) | Audit warning present — the only audit-suite exercise of the helm manager matching against real apiserver `managedFields` |
 | T7 | `allowed_bypass_annotation` | No audit warning |
 | T8 | Excluded namespace (kube-system) | No audit warning (VWC excluded) |
 | T9 | `allowed_no_flux_managed_fields` (UPDATE data only) | No audit warning |
-| T10 | `allowed_namespace_terminating` (cascade deletes during ns teardown) | No would-deny in webhook logs |
+| T10 | `allowed_namespace_terminating` (cascade deletes during ns teardown) | No would-deny in webhook logs, **plus positive proof via metrics**: the `requests_total{decision="allowed_namespace_terminating",operation="DELETE"}` counter must be >0 summed across pods (allowed decisions log at V(1), suppressed at the default level, so a healthy run's log collection is legitimately empty — logs alone can never prove the cascade was observed). Needs `curl` on the host, like T12 |
 | T11 | `denied_delete_flux_managed` (DELETE of a Flux-applied Namespace, Scope `*`) | Audit warning present |
 | T12 | Readiness gated on informer cache sync | T12a `/readyz?verbose` reports `[+]cache-sync ok` in steady state; T12b after revoking `list/watch` on namespaces (keeping `get`), **one pod is deleted** and its replacement must stay not-Ready for `READY_GATE_SECONDS` (default 45); T12c that pod reports `[+]webhook-server ok` **and** `[-]cache-sync failed` — the exact gap the gate closes; T12d restoring the verbs lets it become Ready |
 | T13 | VWC auto-repair after out-of-band delete | `kubectl delete vwc` → the controller recreates it within 60s with rules present, `failurePolicy: Ignore` on both entries and the system-namespace selector — under **real RBAC**, exercising the ClusterRole's `create` verb on VWCs. Runs last in the audit suite (the recreated VWC has no caBundle until the enforce phase reapplies the manifest) |

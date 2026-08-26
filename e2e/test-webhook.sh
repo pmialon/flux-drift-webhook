@@ -395,6 +395,35 @@ if assert_success "T6b-delete"; then
 fi
 
 # ---------------------------------------------------------------------------
+# T6h: DELETE helm-applied resource — denied_delete_flux_managed
+# The helm counterpart of T6: applied server-side as the helm-controller field
+# manager with HelmRelease labels. This is the only audit-suite exercise of the
+# helm manager-name matching against managedFields a real apiserver wrote.
+# ---------------------------------------------------------------------------
+log ""
+log "--- T6h: DELETE helm-applied resource (denied_delete_flux_managed) ---"
+MANIFEST=$(write_manifest t6h <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-helm-ssa
+  namespace: drift-webhook-test
+  labels:
+    helm.toolkit.fluxcd.io/name: my-release
+    helm.toolkit.fluxcd.io/namespace: flux-system
+data:
+  key: value
+YAML
+)
+run_kubectl_cmd apply --server-side --force-conflicts --field-manager=helm-controller -f "${MANIFEST}"
+assert_success "T6h-setup-helm-ssa-apply" || true
+run_kubectl_cmd delete configmap test-helm-ssa -n "${TEST_NS}"
+if assert_success "T6h-delete-succeeds-in-audit-mode"; then
+    assert_has_audit "T6h: DELETE helm-applied ConfigMap — audit warning present"
+    check_webhook_log "denied_delete_flux_managed" "test-helm-ssa"
+fi
+
+# ---------------------------------------------------------------------------
 # T7: Bypass annotation on existing object — allowed_bypass_annotation
 # First create the resource with both Flux labels AND bypass annotation,
 # then update it. The webhook checks the OLD object for the bypass annotation.
@@ -574,7 +603,39 @@ if assert_success "T10-namespace-delete"; then
     else
         pass "T10: namespace teardown — no would-deny for cascade deletes"
     fi
-    check_webhook_log "allowed_namespace_terminating" "test-teardown-child"
+
+    # Positive proof that the cascade was actually OBSERVED and allowed. The
+    # log grep above cannot provide it: allowed decisions log at V(1), which
+    # the default log level suppresses, so in a healthy run the collection is
+    # legitimately EMPTY — absence of "would deny" alone proves nothing. The
+    # requests_total metric is the reliable evidence; the cascade DELETE may
+    # hit any replica, so sum the counter across all pods.
+    if ! command -v curl >/dev/null 2>&1; then
+        log "  SKIP: curl not available — cannot read metrics for the T10 positive proof"
+    else
+        TERMINATING_COUNT=0
+        for pod in $(webhook_pod_names); do
+            kubectl port-forward -n "${WEBHOOK_NS}" "pod/${pod}" 18080:8080 >/dev/null 2>&1 &
+            PF_PID=$!
+            sleep 2
+            POD_METRICS=$(curl -s --max-time 5 http://127.0.0.1:18080/metrics || true)
+            kill "${PF_PID}" 2>/dev/null || true
+            wait "${PF_PID}" 2>/dev/null || true
+            # `|| true`: pipefail + set -e would abort the whole suite on a
+            # pod whose counter has no matching series (grep exits 1).
+            POD_COUNT=$(echo "${POD_METRICS}" \
+                | grep '^flux_drift_webhook_requests_total' \
+                | grep 'decision="allowed_namespace_terminating"' \
+                | grep 'operation="DELETE"' \
+                | awk '{s+=$NF} END {printf "%d", s}' || true)
+            TERMINATING_COUNT=$((TERMINATING_COUNT + ${POD_COUNT:-0}))
+        done
+        if [[ "${TERMINATING_COUNT}" -gt 0 ]]; then
+            pass "T10: cascade DELETEs counted as allowed_namespace_terminating (${TERMINATING_COUNT} across pods)"
+        else
+            fail "T10: no DELETE was counted as allowed_namespace_terminating on any pod — the cascade was never observed"
+        fi
+    fi
 fi
 
 # ---------------------------------------------------------------------------
