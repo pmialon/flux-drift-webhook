@@ -14,4 +14,4 @@ resources:
 # the chart appVersion on each release.
 images:
   - name: ghcr.io/pmialon/flux-drift-webhook
-    newTag: "0.2.0"
+    newTag: "0.3.0"
