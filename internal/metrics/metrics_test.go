@@ -53,12 +53,12 @@ func TestRecordRequest(t *testing.T) {
 
 	m := &Metrics{requestsTotal: counter}
 
-	m.RecordRequest("UPDATE", "allowed_flux_controller")
-	m.RecordRequest("UPDATE", "allowed_flux_controller")
+	m.RecordRequest("UPDATE", "allowed_owning_flux_controller")
+	m.RecordRequest("UPDATE", "allowed_owning_flux_controller")
 	m.RecordRequest("DELETE", "denied_delete_flux_managed")
 
 	expected := float64(2)
-	actual := testutil.ToFloat64(counter.WithLabelValues("UPDATE", "allowed_flux_controller"))
+	actual := testutil.ToFloat64(counter.WithLabelValues("UPDATE", "allowed_owning_flux_controller"))
 	if actual != expected {
 		t.Errorf("expected %v, got %v", expected, actual)
 	}

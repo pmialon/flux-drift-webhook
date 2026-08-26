@@ -77,26 +77,42 @@ func TestGetEnvDuration(t *testing.T) {
 }
 
 func TestMergeSystemControllerSAs(t *testing.T) {
-	defaults := len(mergeSystemControllerSAs(""))
+	base, err := mergeSystemControllerSAs("")
+	if err != nil {
+		t.Fatalf("mergeSystemControllerSAs(\"\") error = %v", err)
+	}
+	defaults := len(base)
 	if defaults == 0 {
 		t.Fatal("expected built-in default system-controller service accounts")
 	}
 
 	tests := []struct {
-		name string
-		csv  string
-		want int
+		name    string
+		csv     string
+		want    int
+		wantErr bool
 	}{
-		{"empty keeps defaults only", "", defaults},
-		{"adds one extra entry", "tenant-ns:custom-controller", defaults + 1},
-		{"deduplicates against defaults", "kube-system:endpoint-controller", defaults},
-		{"trims and ignores blanks", " , tenant-ns:a , ", defaults + 1},
+		{"empty keeps defaults only", "", defaults, false},
+		{"adds one extra entry", "tenant-ns:custom-controller", defaults + 1, false},
+		{"deduplicates against defaults", "kube-system:endpoint-controller", defaults, false},
+		{"trims and ignores blanks", " , tenant-ns:a , ", defaults + 1, false},
+		{"full system: username accepted", "system:kube-scheduler", defaults + 1, false},
+		// The full SA username form can never match either comparison branch
+		// in IsSystemController and would be silently inert — fail fast.
+		{"full SA username form rejected", "system:serviceaccount:kube-system:foo", 0, true},
+		{"colonless entry rejected", "just-a-name", 0, true},
+		{"empty namespace rejected", ":name", 0, true},
+		{"empty name rejected", "ns:", 0, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := len(mergeSystemControllerSAs(tt.csv)); got != tt.want {
-				t.Errorf("mergeSystemControllerSAs(%q) returned %d entries, want %d", tt.csv, got, tt.want)
+			got, err := mergeSystemControllerSAs(tt.csv)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("mergeSystemControllerSAs(%q) error = %v, wantErr %v", tt.csv, err, tt.wantErr)
+			}
+			if !tt.wantErr && len(got) != tt.want {
+				t.Errorf("mergeSystemControllerSAs(%q) returned %d entries, want %d", tt.csv, len(got), tt.want)
 			}
 		})
 	}

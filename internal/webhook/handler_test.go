@@ -124,12 +124,11 @@ func nonControllerOwnerRef() []metav1.OwnerReference {
 }
 
 // createTestObjectWithOwner is createTestObject plus optional ownerReferences.
-func createTestObjectWithOwner(labels, annotations map[string]string, owners []metav1.OwnerReference) runtime.RawExtension {
+func createTestObjectWithOwner(labels map[string]string, owners []metav1.OwnerReference) runtime.RawExtension {
 	metadata := map[string]interface{}{
-		"name":        "test-pod",
-		"namespace":   "default",
-		"labels":      labels,
-		"annotations": annotations,
+		"name":      "test-pod",
+		"namespace": "default",
+		"labels":    labels,
 	}
 	if owners != nil {
 		ownersJSON, _ := json.Marshal(owners)
@@ -666,7 +665,7 @@ func TestHandle_CreateOwnedResourceAllowed(t *testing.T) {
 	// default handler (empty system-SA list) to prove the ownerReference signal
 	// alone suffices and covers cert-manager.
 	handler := newTestHandler()
-	obj := createTestObjectWithOwner(fluxKustomizeLabels, nil, controllerOwnerRef())
+	obj := createTestObjectWithOwner(fluxKustomizeLabels, controllerOwnerRef())
 	req := createAdmissionRequest(admissionv1.Create, obj, "default", "test-pod")
 	req.UserInfo = authenticationv1.UserInfo{
 		Username: "system:serviceaccount:cert-manager:cert-manager",
@@ -718,7 +717,7 @@ func TestHandle_CreateFluxLabelsNoOwnerHumanDenied(t *testing.T) {
 func TestHandle_CreateNonControllerOwnerHumanDenied(t *testing.T) {
 	// A non-controller (controller:false) ownerReference must NOT bypass.
 	handler := newTestHandlerWithSystemSAs()
-	obj := createTestObjectWithOwner(fluxKustomizeLabels, nil, nonControllerOwnerRef())
+	obj := createTestObjectWithOwner(fluxKustomizeLabels, nonControllerOwnerRef())
 	req := createAdmissionRequest(admissionv1.Create, obj, "default", "test-pod")
 	req.UserInfo = authenticationv1.UserInfo{Username: "admin@example.com"}
 
@@ -1398,7 +1397,7 @@ func TestHandle_CreateForgedOwnerRefInInventoryDenied(t *testing.T) {
 	// the owner inventory. The inventory veto must win over the ownerReference
 	// heuristic.
 	handler := newHandlerWithOwnerInventory(t, "default_test-pod__Pod")
-	obj := createTestObjectWithOwner(fluxKustomizeLabels, nil, controllerOwnerRef())
+	obj := createTestObjectWithOwner(fluxKustomizeLabels, controllerOwnerRef())
 	req := createAdmissionRequest(admissionv1.Create, obj, "default", "test-pod")
 	req.UserInfo = authenticationv1.UserInfo{Username: "admin@example.com"}
 

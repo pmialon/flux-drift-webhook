@@ -20,7 +20,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -79,7 +78,7 @@ func (h *DriftPreventionHandler) Handle(ctx context.Context, req admission.Reque
 	// required for drift evaluation, and our VWC rules (Resources: ["*"]) do not
 	// select them. Allow defensively in case the rules ever change.
 	if req.SubResource != "" {
-		h.Metrics.RecordRequest(string(req.Operation), "allowed_subresource")
+		h.Metrics.RecordRequest(string(req.Operation), ReasonAllowedSubresource)
 		return admission.Allowed("subresource not subject to drift prevention")
 	}
 
@@ -90,7 +89,7 @@ func (h *DriftPreventionHandler) Handle(ctx context.Context, req admission.Reque
 	// unrecoverable: repairing it means updating the very object the webhook is
 	// now refusing to let anyone update.
 	if slices.Contains(config.ExcludedGroups(), req.Resource.Group) {
-		h.Metrics.RecordRequest(string(req.Operation), "allowed_excluded_group")
+		h.Metrics.RecordRequest(string(req.Operation), ReasonAllowedExcludedGroup)
 		return admission.Allowed("API group excluded from drift prevention")
 	}
 
@@ -103,8 +102,13 @@ func (h *DriftPreventionHandler) Handle(ctx context.Context, req admission.Reque
 
 	objMeta, oldObjMeta, err := h.extractRequestMetadata(req)
 	if err != nil {
+		// Through buildResponse like every other fail-closed path: honoured in
+		// audit-only mode and visible in the metrics — a hard deny that skips
+		// both would violate the audit contract exactly when a rollout is
+		// watching for 100% of the would-denies.
 		log.Error(err, "failed to extract metadata")
-		return admission.Denied("failed to extract metadata from request")
+		return h.buildResponse(req, decisionResult{false, ReasonDeniedMetadataError,
+			"failed to extract metadata from request"}, log)
 	}
 
 	fluxInfo := GetFluxManagementInfo(objMeta.Labels)
@@ -114,7 +118,7 @@ func (h *DriftPreventionHandler) Handle(ctx context.Context, req admission.Reque
 		fluxInfo = GetFluxManagementInfo(oldObjMeta.Labels)
 	}
 	if !fluxInfo.IsManaged {
-		h.Metrics.RecordRequest(string(req.Operation), "allowed_not_managed")
+		h.Metrics.RecordRequest(string(req.Operation), ReasonAllowedNotManaged)
 		return admission.Allowed("not managed by Flux")
 	}
 
@@ -127,14 +131,16 @@ func (h *DriftPreventionHandler) Handle(ctx context.Context, req admission.Reque
 func (h *DriftPreventionHandler) checkNamespaceScope(
 	ctx context.Context, req admission.Request, log logr.Logger,
 ) (skip bool, resp admission.Response) {
-	shouldProcess, err := h.shouldProcessNamespace(ctx, req.Namespace, log)
+	// shouldProcessNamespace fails CLOSED: a namespace lookup error comes back
+	// with shouldProcess=true, so the request stays in scope and is evaluated
+	// rather than skipping protection. Only a clean "not in scope" verdict
+	// reaches the allow below — which is why the error needs no handling here
+	// (it is logged at the lookup site).
+	shouldProcess, _ := h.shouldProcessNamespace(ctx, req.Namespace, log)
 	if shouldProcess {
 		return false, admission.Response{}
 	}
-	if err != nil {
-		log.V(1).Info("namespace fetch error, allowing request", "error", err)
-	}
-	h.Metrics.RecordRequest(string(req.Operation), "allowed_namespace_filter")
+	h.Metrics.RecordRequest(string(req.Operation), ReasonAllowedNamespaceFilter)
 	return true, admission.Allowed("namespace not in webhook scope")
 }
 
@@ -193,10 +199,7 @@ func (h *DriftPreventionHandler) buildResponse(
 
 // Shared decision reason/message for managedFields extraction failures
 // (fail-closed), used by the DELETE and UPDATE paths.
-const (
-	reasonManagedFieldsError  = "denied_managed_fields_error"
-	messageManagedFieldsError = "failed to extract managed fields from Flux-managed resource"
-)
+const messageManagedFieldsError = "failed to extract managed fields from Flux-managed resource"
 
 type decisionResult struct {
 	allowed bool
@@ -229,7 +232,7 @@ func (h *DriftPreventionHandler) checkBypass(
 
 	if req.Operation == admissionv1.Delete {
 		if IsBeingDeleted(objMeta) {
-			return decisionResult{true, "allowed_deletion_in_progress", "resource already being deleted"}
+			return decisionResult{true, ReasonAllowedDeletionInProgress, "resource already being deleted"}
 		}
 		// Cascade deletes during namespace teardown: the kube namespace-controller
 		// issues a direct DELETE on each finalizer-free child, so the child never
@@ -237,7 +240,7 @@ func (h *DriftPreventionHandler) checkBypass(
 		// the parent namespace is already gone — it only wedges the namespace in
 		// Terminating. Allow once the parent namespace is itself being deleted.
 		if h.namespaceIsTerminating(ctx, req.Namespace, log) {
-			return decisionResult{true, "allowed_namespace_terminating",
+			return decisionResult{true, ReasonAllowedNamespaceTerminating,
 				"namespace is terminating; cascade deletion allowed"}
 		}
 	}
@@ -261,14 +264,14 @@ func (h *DriftPreventionHandler) checkFluxOwnership(
 		)
 		return decisionResult{
 			allowed: false,
-			reason:  "denied_wrong_flux_controller",
+			reason:  ReasonDeniedWrongFluxController,
 			message: fmt.Sprintf(
 				"Flux controller mismatch: resource managed by %s/%s, but modification attempted by different controller",
 				fluxInfo.ControllerNS, fluxInfo.ControllerName,
 			),
 		}
 	}
-	return decisionResult{true, "allowed_owning_flux_controller", "request from owning Flux controller"}
+	return decisionResult{true, ReasonAllowedOwningFluxController, "request from owning Flux controller"}
 }
 
 // fluxOwnerKey renders a Flux owner as "<namespace>/<name>" for metric labels,
@@ -350,6 +353,11 @@ func (h *DriftPreventionHandler) getOwner(
 	owner.SetGroupVersionKind(gvk)
 	key := client.ObjectKey{Namespace: fluxInfo.ControllerNS, Name: fluxInfo.ControllerName}
 	if err := h.Client.Get(fetchCtx, key, owner); err != nil {
+		// Counted, not just logged at debug: an unreadable owner is the root
+		// cause behind denied_create_inventory_unavailable denials and lost
+		// .spec.ignore waivers, and enforce rollouts need to tell owner/cache
+		// trouble from genuine squats without raising the log level.
+		h.Metrics.RecordOwnerLookupError(gvk.Kind)
 		log.V(1).Info("could not read owning Flux object", "error", err)
 		return nil, false
 	}
@@ -414,7 +422,7 @@ func (h *DriftPreventionHandler) checkBypassAnnotation(
 		bypassMeta = oldObjMeta
 	}
 	if HasBypassAnnotation(bypassMeta.Annotations) {
-		return decisionResult{true, "allowed_bypass_annotation", "bypass annotation present"}, true
+		return decisionResult{true, ReasonAllowedBypassAnnotation, "bypass annotation present"}, true
 	}
 	return decisionResult{}, false
 }
@@ -437,7 +445,7 @@ func (h *DriftPreventionHandler) checkReconcileDisabled(
 		meta = oldObjMeta
 	}
 	if IsReconcileDisabled(meta.Annotations) {
-		return decisionResult{true, "allowed_reconcile_disabled",
+		return decisionResult{true, ReasonAllowedReconcileDisabled,
 			"Flux reconciliation is disabled for this object (kustomize.toolkit.fluxcd.io/reconcile: disabled)"}, true
 	}
 	return decisionResult{}, false
@@ -460,7 +468,7 @@ func (h *DriftPreventionHandler) operationDecision(
 		return h.checkDeleteManaged(req, objMeta, fluxInfo, log)
 	default:
 		log.Info("unknown operation type received, allowing", "operation", req.Operation)
-		return decisionResult{true, "allowed_unknown_operation", "unknown operation, allowing"}
+		return decisionResult{true, ReasonAllowedUnknownOperation, "unknown operation, allowing"}
 	}
 }
 
@@ -496,7 +504,7 @@ func (h *DriftPreventionHandler) checkDerivedResourceCreate(
 	if available && found {
 		return decisionResult{
 			allowed: false,
-			reason:  "denied_create_flux_labels",
+			reason:  ReasonDeniedCreateFluxLabels,
 			message: fmt.Sprintf(
 				"cannot create resource declared in the Flux inventory of %s/%s",
 				fluxInfo.ControllerNS, fluxInfo.ControllerName,
@@ -504,20 +512,20 @@ func (h *DriftPreventionHandler) checkDerivedResourceCreate(
 		}
 	}
 	if metav1.GetControllerOf(&objMeta) != nil {
-		return decisionResult{true, "allowed_owned_resource",
+		return decisionResult{true, ReasonAllowedOwnedResource,
 			"resource has a controller ownerReference; Flux labels are inherited from its parent"}
 	}
 	if IsSystemController(req.UserInfo, h.SystemControllerSAs) {
-		return decisionResult{true, "allowed_system_controller",
+		return decisionResult{true, ReasonAllowedSystemController,
 			"request from a recognised Kubernetes control-plane controller"}
 	}
 	if available {
-		return decisionResult{true, "allowed_not_in_owner_inventory",
+		return decisionResult{true, ReasonAllowedNotInOwnerInventory,
 			"object is not in the owning Flux inventory; Flux labels are inherited from a parent"}
 	}
 	return decisionResult{
 		allowed: false,
-		reason:  "denied_create_inventory_unavailable",
+		reason:  ReasonDeniedCreateInventoryUnavail,
 		message: fmt.Sprintf(
 			"cannot verify against the Flux inventory of %s/%s (owner unreadable or not yet reconciled); resource carries Flux management labels",
 			fluxInfo.ControllerNS, fluxInfo.ControllerName,
@@ -615,12 +623,12 @@ func (h *DriftPreventionHandler) checkDeleteManaged(
 	fluxManagedFields, err := FluxManagedFields(objMeta.ManagedFields)
 	if err != nil {
 		log.Error(err, "failed to extract Flux managed fields")
-		return decisionResult{false, reasonManagedFieldsError, messageManagedFieldsError}
+		return decisionResult{false, ReasonDeniedManagedFieldsError, messageManagedFieldsError}
 	}
 
 	if fluxManagedFields.Empty() {
 		log.V(1).Info("no Flux-managed fields found, label is inherited; allowing delete")
-		return decisionResult{true, "allowed_no_flux_managed_fields",
+		return decisionResult{true, ReasonAllowedNoFluxManagedFields,
 			"resource carries Flux labels by inheritance but was not applied by Flux; deletion allowed"}
 	}
 
@@ -629,13 +637,13 @@ func (h *DriftPreventionHandler) checkDeleteManaged(
 	// cluster lifecycle. Humans and tenants never carry these identities.
 	if IsSystemController(req.UserInfo, h.SystemControllerSAs) {
 		log.V(1).Info("delete by recognised control-plane controller; allowing", "user", req.UserInfo.Username)
-		return decisionResult{true, "allowed_system_controller",
+		return decisionResult{true, ReasonAllowedSystemController,
 			"deletion by a recognised Kubernetes control-plane controller"}
 	}
 
 	return decisionResult{
 		allowed: false,
-		reason:  "denied_delete_flux_managed",
+		reason:  ReasonDeniedDeleteFluxManaged,
 		message: fmt.Sprintf(
 			"cannot delete Flux-managed resource (managed by %s/%s)",
 			fluxInfo.ControllerNS, fluxInfo.ControllerName,
@@ -661,12 +669,12 @@ func (h *DriftPreventionHandler) checkUpdateFieldConflict(
 	fluxManagedFields, err := FluxManagedFields(oldObjMeta.ManagedFields)
 	if err != nil {
 		log.Error(err, "failed to extract Flux managed fields")
-		return decisionResult{false, reasonManagedFieldsError, messageManagedFieldsError}
+		return decisionResult{false, ReasonDeniedManagedFieldsError, messageManagedFieldsError}
 	}
 
 	if fluxManagedFields.Empty() {
 		log.V(1).Info("no Flux-managed fields found in managedFields, allowing update")
-		return decisionResult{true, "allowed_no_flux_managed_fields", "no Flux-managed fields detected"}
+		return decisionResult{true, ReasonAllowedNoFluxManagedFields, "no Flux-managed fields detected"}
 	}
 
 	// Protection-disabling annotations (drift-prevention bypass, reconcile:
@@ -680,7 +688,7 @@ func (h *DriftPreventionHandler) checkUpdateFieldConflict(
 			"annotation", key, "user", req.UserInfo.Username)
 		return decisionResult{
 			allowed: false,
-			reason:  "denied_bypass_annotation_added",
+			reason:  ReasonDeniedBypassAnnotationAdded,
 			message: fmt.Sprintf(
 				"the %s annotation must be applied via Git (managed by %s/%s), not added directly",
 				key, fluxInfo.ControllerNS, fluxInfo.ControllerName,
@@ -688,13 +696,9 @@ func (h *DriftPreventionHandler) checkUpdateFieldConflict(
 		}
 	}
 
-	modifiedFields, err := h.parseAndDiff(req, log)
-	if err != nil {
-		var fce fieldCheckError
-		if errors.As(err, &fce) {
-			return fce.result
-		}
-		return decisionResult{false, "denied_internal_error", "unexpected internal error"}
+	modifiedFields, parseDenied := h.parseAndDiff(req, log)
+	if parseDenied != nil {
+		return *parseDenied
 	}
 
 	conflict := GetConflictingFields(modifiedFields, fluxManagedFields)
@@ -717,7 +721,7 @@ func (h *DriftPreventionHandler) checkUpdateFieldConflict(
 			"conflictingFields", remaining.String(), "user", req.UserInfo.Username)
 		return decisionResult{
 			allowed: false,
-			reason:  "denied_update_flux_managed_fields",
+			reason:  ReasonDeniedUpdateFluxManaged,
 			message: fmt.Sprintf("cannot modify Flux-managed fields (managed by %s/%s): %s",
 				fluxInfo.ControllerNS, fluxInfo.ControllerName, remaining.String()),
 		}
@@ -732,14 +736,14 @@ func (h *DriftPreventionHandler) checkUpdateFieldConflict(
 	newFluxFields, err := FluxManagedFields(objMeta.ManagedFields)
 	if err != nil {
 		log.Error(err, "failed to extract Flux managed fields from new object")
-		return decisionResult{false, reasonManagedFieldsError, messageManagedFieldsError}
+		return decisionResult{false, ReasonDeniedManagedFieldsError, messageManagedFieldsError}
 	}
 	if removed := WaiveIgnoredConflicts(fluxManagedFields.Difference(newFluxFields), ignoreSet); !removed.Empty() {
 		log.Info("update releases Flux-managed fields without a value change",
 			"releasedFields", removed.String(), "user", req.UserInfo.Username)
 		return decisionResult{
 			allowed: false,
-			reason:  "denied_managed_fields_tampered",
+			reason:  ReasonDeniedManagedFieldsTampered,
 			message: fmt.Sprintf(
 				"cannot release Flux field ownership (managed by %s/%s): %s",
 				fluxInfo.ControllerNS, fluxInfo.ControllerName, removed.String()),
@@ -749,12 +753,12 @@ func (h *DriftPreventionHandler) checkUpdateFieldConflict(
 	if !conflict.Empty() {
 		log.Info("update conflicts waived by Kustomization .spec.ignore",
 			"waivedFields", conflict.String(), "user", req.UserInfo.Username)
-		return decisionResult{true, reasonDriftIgnored,
+		return decisionResult{true, ReasonAllowedDriftIgnoredField,
 			"modified fields are excluded from drift detection by the owning Kustomization's .spec.ignore"}
 	}
 
 	log.V(1).Info("update does not affect Flux-managed fields, allowing", "user", req.UserInfo.Username)
-	return decisionResult{true, "allowed_no_field_conflict",
+	return decisionResult{true, ReasonAllowedNoFieldConflict,
 		"modified fields do not overlap with Flux-managed fields"}
 }
 
@@ -798,39 +802,28 @@ func (h *DriftPreventionHandler) driftIgnoreSet(
 	return ignoreSet
 }
 
-type fieldCheckError struct {
-	result decisionResult
-}
-
-func (e fieldCheckError) Error() string { return e.result.message }
-
-// parseAndDiff parses old/new objects and computes the field diff.
-// Fail-closed: denies on any parse failure.
+// parseAndDiff parses old/new objects and computes the field diff. Fail-closed:
+// a parse failure yields the deny decision directly (nil on success). This is
+// defence in depth — the apiserver hands us well-formed JSON, and malformed
+// payloads normally fail metadata extraction first (denied_metadata_error).
 func (h *DriftPreventionHandler) parseAndDiff(
 	req admission.Request, log logr.Logger,
-) (*fieldpath.Set, error) {
+) (*fieldpath.Set, *decisionResult) {
 	oldObj := &unstructured.Unstructured{}
 	if err := json.Unmarshal(req.OldObject.Raw, &oldObj.Object); err != nil {
 		log.Error(err, "failed to parse old object for field diff")
-		return nil, fieldCheckError{decisionResult{false, "denied_parse_error",
-			"failed to parse old object for Flux-managed resource"}}
+		return nil, &decisionResult{false, ReasonDeniedParseError,
+			"failed to parse old object for Flux-managed resource"}
 	}
 
 	newObj := &unstructured.Unstructured{}
 	if err := json.Unmarshal(req.Object.Raw, &newObj.Object); err != nil {
 		log.Error(err, "failed to parse new object for field diff")
-		return nil, fieldCheckError{decisionResult{false, "denied_parse_error",
-			"failed to parse new object for Flux-managed resource"}}
+		return nil, &decisionResult{false, ReasonDeniedParseError,
+			"failed to parse new object for Flux-managed resource"}
 	}
 
-	modifiedFields, err := ComputeFieldDiff(oldObj, newObj)
-	if err != nil {
-		log.Error(err, "failed to compute field diff")
-		return nil, fieldCheckError{decisionResult{false, "denied_diff_error",
-			"failed to compute field diff for Flux-managed resource"}}
-	}
-
-	return modifiedFields, nil
+	return ComputeFieldDiff(oldObj, newObj), nil
 }
 
 // isOwningController returns false if Flux management labels changed between

@@ -39,6 +39,7 @@ type Metrics struct {
 	ownershipConflictsTotal *prometheus.CounterVec
 	latencySeconds          *prometheus.HistogramVec
 	configUpdatesTotal      *prometheus.CounterVec
+	ownerLookupErrorsTotal  *prometheus.CounterVec
 }
 
 // NewMetrics creates the webhook metrics and registers them with the
@@ -80,9 +81,15 @@ func NewMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 		),
 		latencySeconds: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "flux_drift_webhook_latency_seconds",
-				Help:    "Latency of admission request processing",
-				Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+				Name: "flux_drift_webhook_latency_seconds",
+				Help: "Latency of admission request processing",
+				// The tail buckets cover the degradation region an operator
+				// must see: cache/API lookups carry 2s timeouts (sometimes two
+				// sequential ones) and the VWC timeoutSeconds is 3 — capping
+				// at 1s would collapse exactly the requests that start timing
+				// out (and silently allowing under failurePolicy Ignore) into
+				// +Inf.
+				Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 			},
 			[]string{labelOperation},
 		),
@@ -93,6 +100,16 @@ func NewMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"status"},
 		),
+		ownerLookupErrorsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "flux_drift_webhook_owner_lookup_errors_total",
+				Help: "Failed reads of the owning Kustomization/HelmRelease. " +
+					"The root cause behind denied_create_inventory_unavailable " +
+					"denials and lost .spec.ignore waivers (both fail closed)",
+			},
+			// owner_kind is bounded: Kustomization or HelmRelease.
+			[]string{"owner_kind"},
+		),
 	}
 
 	reg.MustRegister(
@@ -101,6 +118,7 @@ func NewMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 		m.ownershipConflictsTotal,
 		m.latencySeconds,
 		m.configUpdatesTotal,
+		m.ownerLookupErrorsTotal,
 	)
 
 	return m
@@ -124,6 +142,16 @@ func (m *Metrics) RecordDenial(operation, kind string) {
 // reconcilers fighting over the same resource.
 func (m *Metrics) RecordOwnershipConflict(kind, previousOwner, newOwner string) {
 	m.ownershipConflictsTotal.WithLabelValues(kind, previousOwner, newOwner).Inc()
+}
+
+// RecordOwnerLookupError increments the owner-lookup failure counter for the
+// given owner kind (Kustomization or HelmRelease). Nil-safe: handler helpers
+// are exercised in tests without a Metrics instance.
+func (m *Metrics) RecordOwnerLookupError(ownerKind string) {
+	if m == nil {
+		return
+	}
+	m.ownerLookupErrorsTotal.WithLabelValues(ownerKind).Inc()
 }
 
 // RecordConfigUpdate increments the VWC update counter for the given status

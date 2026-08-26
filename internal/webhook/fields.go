@@ -78,14 +78,14 @@ func isFluxFieldManager(manager string) bool {
 // ComputeFieldDiff returns the set of field paths whose values differ between
 // oldObj and newObj (added, removed, or changed). A nil operand yields an empty
 // set. Recursion is bounded by maxDiffDepth.
-func ComputeFieldDiff(oldObj, newObj *unstructured.Unstructured) (*fieldpath.Set, error) {
+func ComputeFieldDiff(oldObj, newObj *unstructured.Unstructured) *fieldpath.Set {
 	if oldObj == nil || newObj == nil {
-		return fieldpath.NewSet(), nil
+		return fieldpath.NewSet()
 	}
 
 	set := fieldpath.NewSet()
 	diffMaps(oldObj.Object, newObj.Object, fieldpath.Path{}, set, 0)
-	return set, nil
+	return set
 }
 
 func diffMaps(oldMap, newMap map[string]interface{}, prefix fieldpath.Path, set *fieldpath.Set, depth int) {

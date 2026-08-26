@@ -259,8 +259,9 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 | `flux_drift_webhook_requests_total` | Counter | `operation`, `decision` | All admission requests processed |
 | `flux_drift_webhook_denials_total` | Counter | `operation`, `kind` | Denied requests only |
 | `flux_drift_webhook_ownership_conflicts_total` | Counter | `kind`, `previous_owner`, `new_owner` | Dual/multiple ownership: Flux owner labels flipped between two reconcilers (owners as `namespace/name`; recorded on each `denied_wrong_flux_controller`) |
-| `flux_drift_webhook_latency_seconds` | Histogram | `operation` | Request processing latency |
+| `flux_drift_webhook_latency_seconds` | Histogram | `operation` | Request processing latency (buckets reach 10s: the 1s–3s degradation region — where cache lookups time out and `failurePolicy: Ignore` silently allows — must be visible, not collapsed into `+Inf`) |
 | `flux_drift_webhook_config_updates_total` | Counter | `status` | VWC update attempts |
+| `flux_drift_webhook_owner_lookup_errors_total` | Counter | `owner_kind` | Failed reads of the owning Kustomization/HelmRelease — the root cause behind `denied_create_inventory_unavailable` denials and lost `.spec.ignore` waivers |
 
 **Decision label values** for `requests_total`:
 - `allowed_not_managed` — resource has no Flux labels
@@ -278,17 +279,19 @@ Flags marked with `env:` can also be set via environment variables. CLI flags ta
 - `allowed_not_in_owner_inventory` — CREATE of an object whose id is absent from the owning Kustomization/HelmRelease `.status.inventory` (Flux labels inherited from a parent, e.g. an operator-derived resource)
 - `allowed_subresource` — request for a sub-resource (status/scale/…); not subject to drift prevention
 - `allowed_excluded_group` — request targets an API group in `config.ExcludedGroups()` (`admissionregistration.k8s.io`); never guarded, so the webhook cannot lock itself out of its own configuration
-- `denied_parse_error` — failed to parse objects for field check (fail-closed)
+- `denied_metadata_error` — failed to extract object metadata from the request (fail-closed; routed through the normal decision machinery, so audit-only mode logs it instead of hard-denying and the metrics see it)
+- `denied_parse_error` — failed to parse objects for the field check (fail-closed defence in depth: malformed payloads normally fail metadata extraction first)
 - `denied_managed_fields_error` — failed to extract managed fields (fail-closed)
 - `denied_managed_fields_tampered` — UPDATE releasing Flux field ownership without a value change (managedFields wipe / SSA manager-name spoof)
 - `denied_bypass_annotation_added` — non-Flux UPDATE introducing a protection-disabling annotation (drift-prevention bypass or `reconcile: disabled`) on a Flux-applied object (two-step bypass attempt; apply it via Git instead)
-- `denied_diff_error` — failed to compute field diff (fail-closed)
 - `denied_create_flux_labels` — CREATE of an object whose id is declared in the owner inventory, by a non-Flux actor (squat protection; outranks ownerReference and system-controller identities)
 - `denied_create_inventory_unavailable` — CREATE with Flux labels that no signal could clear: owner inventory unreadable/empty AND no controller ownerReference AND not a recognised system controller (fail-closed, distinct from squat for observability)
 - `denied_delete_flux_managed` — DELETE of Flux-managed resource
 - `denied_update_flux_managed_fields` — UPDATE modifying Flux-managed fields
 - `denied_wrong_flux_controller` — Flux controller modifying another controller's resource
 - `allowed_unknown_operation` — unknown operation type (defence-in-depth fallback)
+
+Every reason is a constant in `internal/webhook/reasons.go`, and the exported `AllDecisionReasons` slice is the machine-readable contract: `TestDecisionLabelContract` drives `Handle` with one fixture per reason and asserts the exact label recorded, in both directions (undocumented reason in code, or documented reason with no fixture, both fail). The previously listed `denied_diff_error` and the undocumented `denied_internal_error` were unreachable dead code and were removed.
 
 ## Prerequisites
 
@@ -322,9 +325,11 @@ For the integration suite, `setup-envtest` provides the envtest assets (`ENVTEST
 | `internal/webhook/auth_test.go` | Service account identity parsing (`IsFluxController` 11 edge cases; `IsSystemController` control-plane allow-list incl. configurable entry, non-SA full usernames `system:apiserver`/`system:kube-controller-manager`, the non-`system:` spoof guard, and its inverse: an SA in a namespace named `system` cannot spoof a full-username entry) |
 | `internal/webhook/labels_test.go` | Flux label detection, bypass annotation check |
 | `internal/webhook/cache_test.go` | Cache diet: `StripOwnerForCache` (fat Kustomization → three read fields; sparse owners; tombstone passthrough), `CacheOptions` behavioral (owners stripped, non-owners keep payload minus managedFields, `ByObject` must stay empty — REST-mapped at construction, fails on absent CRDs), metadata-only namespace `Get` against the fake client |
+| `internal/webhook/contract_test.go` | The decision-label contract (`TestDecisionLabelContract`): one `Handle` fixture per reason in `AllDecisionReasons`, asserting the exact label recorded on `requests_total`; bidirectional (undocumented reason or fixture-less reason both fail); `denied_parse_error` pinned at the `parseAndDiff` level (unreachable through `Handle` by construction) |
+| `internal/webhook/bench_test.go` | Hot-path benchmarks: `ComputeFieldDiff` (realistic Deployment + 1000-entry keyed list), `GetConflictingFields`, full `Handle` UPDATE — an accidental quadratic shows up in benchstat instead of production latency |
 | `internal/controller/webhook_config_test.go` | VWC reconciliation (single wildcard rule + match conditions on both entries), safety-critical fields applied on both entries (`failurePolicy: Ignore`, `timeoutSeconds: 3`, `matchPolicy: Equivalent`, system-namespace `namespaceSelector` in manifest order), `ConfigUpdated` event (and no spurious `ConfigRecreated` in steady state), from-scratch recreation (`ConfigRecreated` Warning + fail-open defaults), `excludedNamespaces` (append/dedup/order), `wildcardRules` shape (`*`/`*`/`*` + AllScopes + CUD), `matchConditions` (one condition per excluded group on **both** entries, admission group covered) |
 | `internal/metrics/metrics_test.go` | Metrics registration, counter recording |
-| `cmd/webhook/main_test.go` | `getEnv` (`TestGetEnv`), `getEnvDuration` (`TestGetEnvDuration`), `mergeSystemControllerSAs` (`TestMergeSystemControllerSAs`), `resyncIntervalDefault` (`TestResyncIntervalDefault`: `VWC_RESYNC_INTERVAL` wins over the deprecated `DISCOVERY_INTERVAL` alias, both honoured, both validated) helpers, and the readiness gate: `TestCachesSyncedCheck` (red before sync, green after `Start`, clean shutdown) and `TestCachesSyncedNeedLeaderElection` (must stay `false`, else non-leader replicas never become Ready) — the bespoke `setupLogger` helper was removed (logging is now `fluxcd/pkg/runtime/logger`) |
+| `cmd/webhook/main_test.go` | `getEnv` (`TestGetEnv`), `getEnvDuration` (`TestGetEnvDuration`), `mergeSystemControllerSAs` (`TestMergeSystemControllerSAs`: defaults union, dedup, startup rejection of inert entries — full SA username form, colonless, empty parts), `resyncIntervalDefault` (`TestResyncIntervalDefault`: `VWC_RESYNC_INTERVAL` wins over the deprecated `DISCOVERY_INTERVAL` alias, both honoured, both validated) helpers, and the readiness gate: `TestCachesSyncedCheck` (red before sync, green after `Start`, clean shutdown) and `TestCachesSyncedNeedLeaderElection` (must stay `false`, else non-leader replicas never become Ready) — the bespoke `setupLogger` helper was removed (logging is now `fluxcd/pkg/runtime/logger`) |
 
 ### Integration tests (envtest)
 

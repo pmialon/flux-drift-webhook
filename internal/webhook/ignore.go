@@ -27,11 +27,6 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 )
 
-// reasonDriftIgnored is the decision reason for an UPDATE whose only conflicting
-// fields are excluded from drift detection by the owning Kustomization's
-// .spec.ignore (Flux DriftIgnoreRules).
-const reasonDriftIgnored = "allowed_drift_ignored_field"
-
 // ignoreRule is a parsed Kustomization .spec.ignore entry: RFC 6901 JSON pointer
 // paths, optionally scoped to objects matching target (a kustomize Selector).
 type ignoreRule struct {
