@@ -251,10 +251,7 @@ func TestComputeFieldDiff(t *testing.T) {
 			}
 			newObj = makeObj(tt.new)
 
-			got, err := ComputeFieldDiff(oldObj, newObj)
-			if err != nil {
-				t.Fatalf("ComputeFieldDiff() error = %v", err)
-			}
+			got := ComputeFieldDiff(oldObj, newObj)
 
 			if tt.wantEmpty && !got.Empty() {
 				t.Errorf("expected empty diff, got: %s", got.String())

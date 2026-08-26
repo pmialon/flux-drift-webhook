@@ -59,7 +59,7 @@ func Fuzz_ComputeFieldDiff(f *testing.F) {
 		if json.Unmarshal(newRaw, &newObj.Object) != nil {
 			return
 		}
-		_, _ = ComputeFieldDiff(oldObj, newObj)
+		_ = ComputeFieldDiff(oldObj, newObj)
 	})
 }
 
