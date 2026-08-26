@@ -206,7 +206,7 @@ Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtim
 
 ### Manager Bootstrap
 
-`cmd/webhook/main.go` bootstraps the controller-runtime manager from `fluxcd/pkg/runtime` v0.110.1 option structs, using `spf13/pflag` (not the stdlib `flag` package):
+`cmd/webhook/main.go` bootstraps the controller-runtime manager from the `fluxcd/pkg/runtime` option structs (version: see the Key dependencies table), using `spf13/pflag` (not the stdlib `flag` package):
 
 - **Logging**: `logger.NewLogger` / `logger.SetLogger` (the bespoke zap logger was removed in favour of `fluxcd/pkg/runtime/logger`)
 - **Leader election**: `leaderelection.Options` (see above)

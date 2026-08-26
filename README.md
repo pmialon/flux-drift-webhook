@@ -174,8 +174,9 @@ kubectl get pods -n flux-system -l app.kubernetes.io/name=flux-drift-webhook
 # View logs
 kubectl logs -n flux-system -l app.kubernetes.io/name=flux-drift-webhook
 
-# Check metrics
-kubectl port-forward -n flux-system svc/flux-drift-webhook 8080:8080
+# Check metrics (the Service only exposes the webhook port 443, so target the
+# Deployment's pods directly — the PodMonitor scrapes the pod port too)
+kubectl port-forward -n flux-system deploy/flux-drift-webhook 8080:8080
 curl http://localhost:8080/metrics
 ```
 
@@ -389,6 +390,57 @@ Requests targeting `admissionregistration.k8s.io` are always allowed
 a `ValidatingWebhookConfiguration` deployed *by Flux* carries Flux labels and a
 Flux `fieldManager`, so guarding it would deny every write to it — including the
 one needed to repair it.
+
+## Protection Scope and Limits
+
+Namespaces excluded from interception — nothing in them is ever drift-protected:
+
+- `kube-system`, `kube-public`, `kube-node-lease` — mutating control-plane objects mid-request
+  is a cluster-stability risk, and their controllers legitimately rewrite Flux-labelled
+  derivatives (Endpoints, EndpointSlices).
+- **The webhook's own namespace** (`flux-system` by default) — self-deadlock avoidance: the
+  webhook, its certificates and its configuration must stay repairable even when the webhook
+  misbehaves. Consequence worth knowing: **Flux's own custom resources (Kustomizations,
+  HelmReleases, GitRepositories…) in `flux-system` are NOT drift-protected** — `kubectl edit`
+  of a Kustomization path, `flux suspend`, or deleting a source remains possible.
+  Compensating controls: Flux's own drift correction re-applies what Git declares, RBAC on the
+  Flux CRs, and API audit logging. The chart can *extend* the exclusions
+  (`webhook.extraExcludedNamespaces`) but not shrink the built-ins.
+- The `admissionregistration.k8s.io` API group is never guarded (in the CEL matchConditions
+  *and* independently in the handler), so the webhook cannot lock itself out of its own
+  configuration.
+
+Also out of scope: sub-resources (`status`, `scale` — an autoscaler writing through the scale
+sub-resource is always allowed) and anything without a Flux ownership label (the API server
+does not even forward it).
+
+## Rolling Out Enforcement
+
+Audit first, enforce once the audit stream is clean:
+
+1. **Deploy audit-only** (`deploy/overlays/dev`, or `config.auditOnly=true`): every would-deny
+   is logged and counted, nothing is blocked.
+2. **Soak** for at least one full reconciliation cycle of every Kustomization/HelmRelease
+   (typically a few days), watching denied decisions:
+   ```promql
+   sum by (decision) (rate(flux_drift_webhook_requests_total{decision=~"denied_.*"}[1h]))
+   ```
+3. **Triage each `denied_*` reason** before flipping:
+   - `denied_update_flux_managed_fields` / `denied_delete_flux_managed` — genuine drift, or an
+     automation (HPA on a Flux-declared `.spec.replicas`?) fighting Flux. Fix the manifest
+     (stop declaring the field) or add the owner's `.spec.ignore` for it.
+   - `denied_wrong_flux_controller` — two reconcilers own the same object; give it one owner
+     (see `flux_drift_webhook_ownership_conflicts_total` for the pair).
+   - `denied_create_inventory_unavailable` — the webhook cannot read the owning
+     Kustomization/HelmRelease: RBAC, cache sync, or genuinely missing owner. Check
+     `flux_drift_webhook_owner_lookup_errors_total`. Enforcing with these present will break
+     legitimate derived-object creation.
+   - `denied_bypass_annotation_added` — someone attempting a manual bypass; expected to stay.
+4. **Flip to enforce** (`deploy/overlays/prod`, or `config.auditOnly=false`) and keep the
+   shipped PrometheusRule alerts active — `FluxDriftWebhookDown` is your fail-open signal.
+
+The full decision-reason reference lives in [CLAUDE.md](CLAUDE.md) (Prometheus Metrics
+section); the machine-readable list is `webhook.AllDecisionReasons`.
 
 ## Monitoring
 
@@ -635,15 +687,30 @@ never landed rather than a discovery problem.
 <details>
 <summary>How to temporarily disable the webhook</summary>
 
-**Solution**:
-```bash
-# Delete the ValidatingWebhookConfiguration
-kubectl delete validatingwebhookconfiguration flux-drift-webhook.fluxcd.io
+**Solution** — two procedures that actually hold:
 
-# Or scale down the deployment
+```bash
+# Preferred: switch to audit mode — denials stop, observability continues.
+# (Kustomize: apply the dev overlay; Helm: --set config.auditOnly=true.)
+kubectl -n flux-system patch deployment flux-drift-webhook --type=json   -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--audit-only=true"}]'
+
+# Or: scale to zero. This works as-is even with the HPA enabled — Kubernetes
+# HPAs treat replicas=0 as "implicitly disabled for maintenance" and stop
+# adjusting the target until you scale it back up. With the pods gone,
+# failurePolicy Ignore fails open.
 kubectl scale deployment flux-drift-webhook -n flux-system --replicas=0
 ```
+
+Do **not** `kubectl delete validatingwebhookconfiguration` to disable it: the
+controller watches Delete events on its own VWC and recreates it within
+seconds (fail-open until the manifest's cert-manager annotation is reapplied,
+with a `ConfigRecreated` Warning Event) — deleting disables nothing and only
+costs you the caBundle.
 </details>
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) — breaking changes and upgrade notes are called out per release.
 
 ## Roadmap
 

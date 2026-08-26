@@ -8,7 +8,7 @@ Both render the same set of resources.
 
 ## Prerequisites
 
-- Kubernetes >= 1.27
+- Kubernetes >= 1.30 (CEL `matchConditions` are GA from 1.30; `Chart.yaml` declares `kubeVersion: ">=1.30.0-0"`)
 - [cert-manager](https://cert-manager.io) (default TLS path; or bring your own — see below)
 - FluxCD installed in the target namespace (`flux-system`)
 - Prometheus Operator CRDs, if `podMonitor.enabled=true` or `prometheusRule.enabled=true` (both default)
@@ -79,7 +79,8 @@ flux create helmrelease flux-drift-webhook \
 
 The range is bounded on purpose. This is a 0.x chart, so a minor bump may carry a breaking change —
 0.2.0 raised the Kubernetes floor to 1.30 — and an open-ended `>=` constraint would have Flux apply
-that automatically. Widen it deliberately when you have read the release notes.
+that automatically. Widen it deliberately when you have read the release notes —
+breaking changes and upgrade steps are tracked in the repository's `CHANGELOG.md`.
 
 Flux upgrades the release automatically when a new chart version is published. If an upgrade fails,
 Flux can [roll back](https://fluxcd.io/flux/components/helm/helmreleases/#configuring-failure-remediation)
@@ -116,7 +117,7 @@ generated `HelmRepository`/`HelmRelease` manifests and let Flux reconcile them �
 | `config.leaderElection.enabled` | Leader election | `true` |
 | `config.kubeApiQps` / `kubeApiBurst` | Client rate limits (empty = binary defaults 50/300) | `""` |
 | `resources` | Requests/limits (Burstable QoS; no CPU limit on purpose) | requests `25m` / `64Mi`, limit `128Mi` |
-| `runtime.gomaxprocs` / `gomemlimit` | Go runtime tuning (couple to `resources`) | `"2"` / `"230MiB"` |
+| `runtime.gomaxprocs` / `gomemlimit` | Go runtime tuning (couple to `resources`: GOMEMLIMIT must stay below `resources.limits.memory`) | `"1"` / `"100MiB"` |
 | `autoscaling.enabled` | HPA (CPU-only) | `true` (min 3 / max 9 / 1200% of the 25m request = 300m per pod) |
 | `podDisruptionBudget.enabled` | PDB `minAvailable: 1` | `true` |
 | `webhook.failurePolicy` | VWC failurePolicy: `Ignore` fails open on outage, `Fail` blocks writes while down | `Ignore` |

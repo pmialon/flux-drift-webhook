@@ -16,8 +16,9 @@ with a static caBundle in the ValidatingWebhookConfiguration.
 1. Watch the rollout:
    kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "flux-drift-webhook.fullname" . }}
 
-2. The webhook rules are populated by the controller at runtime (after discovery,
-   ~{{ default "5m" .Values.config.discoveryInterval }}). Verify:
+2. The webhook rules are static (a wildcard rule + CEL matchConditions): the chart
+   ships them and the controller re-asserts them every
+   {{ default "5m" .Values.config.vwcResyncInterval }} to repair out-of-band edits. Verify:
    kubectl get validatingwebhookconfiguration {{ include "flux-drift-webhook.webhookName" . }} -o yaml
 
 {{- if .Values.tests.enabled }}

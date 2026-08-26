@@ -15,19 +15,20 @@ contributing here, read this file first.
 - The human author is **responsible for understanding** every line you submit. Keep changes
   minimal, reviewable and free of verbose AI boilerplate.
 
+## Read this before changing behaviour
+
+[`CLAUDE.md`](CLAUDE.md) is the reference for the admission decision paths, the
+bypass ordering, the decision-label contract and every documented invariant —
+read the relevant section **before** touching `internal/webhook` or
+`internal/controller`, and update it in the same change when behaviour moves.
+
 ## Build, test and lint
 ```sh
-make build           # compile ./cmd/webhook
-make test            # CGO-free unit tests with coverage (also runs the fuzz seed corpora)
-make test-race       # tests with the race detector (needs CGO)
-make test-integration # envtest integration suite (real apiserver; needs envtest assets — see DEVELOPMENT.md)
-make fuzz-smoketest  # smoke-test the native Go fuzz targets
-make lint            # golangci-lint (config: .golangci.yml)
-make fmt vet tidy    # format, vet, tidy (go.mod -compat=1.26)
 make verify          # fmt+vet+tidy+generate+lint+build+test+manifests, then a clean-tree check
 make ci              # full local gate (verify + verify-docker + test-integration + fuzz-smoketest + test-e2e)
 ```
 `make verify` must pass and leave a **clean git tree** before you open a pull request.
+The full target list lives in [`DEVELOPMENT.md`](DEVELOPMENT.md) and `Makefile`.
 
 ## Conventions
 - Every `.go` file carries the Apache-2.0 header from `hack/boilerplate.go.txt`.
