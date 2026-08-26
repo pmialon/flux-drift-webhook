@@ -7,6 +7,14 @@ read the **Breaking / upgrade notes** before widening a version range).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-08-26
+
+The full remediation of the 2026-07-31 external review: all 41 findings
+addressed (admission-logic hardening, VWC lifecycle, CI/supply chain,
+observability, chart, tests, docs).
+
 ### Breaking / upgrade notes
 
 - The Helm chart now **refuses to render** when the release namespace differs
@@ -101,6 +109,7 @@ Initial release: field-level drift prevention for FluxCD-managed resources
 (SSA managedFields-based), audit and enforce modes, Kustomize manifests and
 Helm chart, cosign-signed multi-arch images with SBOM and SLSA provenance.
 
-[Unreleased]: https://github.com/pmialon/flux-drift-webhook/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pmialon/flux-drift-webhook/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pmialon/flux-drift-webhook/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pmialon/flux-drift-webhook/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pmialon/flux-drift-webhook/releases/tag/v0.1.0
