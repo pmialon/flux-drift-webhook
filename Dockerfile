@@ -8,7 +8,7 @@ FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.9.0@sha256:c64defb9ed5a91eacb37f9
 
 # Build stage
 # golang:1.26.6-alpine
-FROM --platform=$BUILDPLATFORM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
 
 # Copy the build utilities
 COPY --from=xx / /
@@ -35,7 +35,7 @@ RUN xx-go build -trimpath -ldflags="-w -s" -o webhook ./cmd/webhook
 # version at all: without the digest every build silently pulls whatever
 # Google pushed last.
 # gcr.io/distroless/static:nonroot
-FROM gcr.io/distroless/static:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
+FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 
 WORKDIR /
 
