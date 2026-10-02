@@ -41,7 +41,7 @@ rules:
     resources: ["helmreleases"]
     verbs: ["get", "list", "watch"]
   # Events for debugging
-  - apiGroups: [""]
+  - apiGroups: ["", "events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
 {{- end }}

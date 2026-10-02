@@ -28,7 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	kuberecorder "k8s.io/client-go/tools/record"
+	kubeevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -37,6 +37,11 @@ import (
 	"github.com/pmialon/flux-drift-webhook/internal/config"
 	"github.com/pmialon/flux-drift-webhook/internal/metrics"
 )
+
+// eventAction is the events/v1 action attached to every Event: the apiserver
+// rejects events.k8s.io Events without one, and each outcome stems from applying
+// the configuration.
+const eventAction = "Apply"
 
 // WebhookConfigReconciler reconciles the ValidatingWebhookConfiguration that
 // selects Flux-managed resources, applying it via server-side apply.
@@ -50,7 +55,7 @@ type WebhookConfigReconciler struct {
 	Metrics *metrics.Metrics
 	// EventRecorder emits Kubernetes Events for configuration-update outcomes.
 	// It is optional; when nil, no Events are emitted.
-	EventRecorder kuberecorder.EventRecorder
+	EventRecorder kubeevents.EventRecorder
 	// WebhookName is the name of the managed ValidatingWebhookConfiguration.
 	// The two webhook entries are derived from it ("kustomize."/"helm." prefixes).
 	WebhookName string
@@ -282,7 +287,7 @@ func wildcardRules() []admissionregistrationv1.RuleWithOperations {
 // unit tests that omit a recorder.
 func (r *WebhookConfigReconciler) event(obj runtime.Object, eventtype, reason, messageFmt string, args ...any) {
 	if r.EventRecorder != nil {
-		r.EventRecorder.Eventf(obj, eventtype, reason, messageFmt, args...)
+		r.EventRecorder.Eventf(obj, nil, eventtype, reason, eventAction, messageFmt, args...)
 	}
 }
 

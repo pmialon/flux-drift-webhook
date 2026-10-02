@@ -229,4 +229,4 @@ extraEnv: []
 # `helm test` connectivity check (TCP probe of the webhook Service port).
 tests:
   enabled: true
-  image: docker.io/library/busybox:1.37
+  image: docker.io/library/busybox:1.38.0

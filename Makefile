@@ -11,24 +11,24 @@ FUZZ_TIME ?= 20s
 # external GitHub index (raw.githubusercontent.com), which works over the
 # network on both CI runners and workstations.
 # Pinned (not @latest): test-integration is a CI gate and must not depend on a
-# moving tool version. Fall back to 1.35.0 if 1.36.0 assets are unavailable;
+# moving tool version. Fall back to 1.36.0 if 1.37.0 assets are unavailable;
 # in restricted networks, pre-seed $(LOCALBIN) and run with
 # ENVTEST_INSTALLED_ONLY=1, or point --index at a mirror.
 # Third-party manifests vendored under e2e/ so `make test-e2e` runs offline
 # straight after a clone. Refresh them with `make e2e-vendor`.
-CERT_MANAGER_VERSION ?= v1.21.0
-PROMETHEUS_OPERATOR_VERSION ?= v0.92.1
+CERT_MANAGER_VERSION ?= v1.21.2
+PROMETHEUS_OPERATOR_VERSION ?= v0.94.1
 # Flux itself, so the e2e suite exercises the owner-inventory paths against real
 # Kustomization/HelmRelease CRDs rather than a cluster where they do not exist.
-FLUX_VERSION ?= v2.9.2
+FLUX_VERSION ?= v2.9.6
 # podinfo, used as a realistic workload in the enforce tests: its Deployment
 # declares no .spec.replicas and it ships an HPA, so the Flux-owns-template /
 # autoscaler-owns-replicas case is testable without inventing a workload.
-PODINFO_VERSION ?= 6.14.1
+PODINFO_VERSION ?= 6.15.0
 
 LOCALBIN ?= $(CURDIR)/bin
-ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1
-ENVTEST_K8S_VERSION ?= 1.36.0
+ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
+ENVTEST_K8S_VERSION ?= 1.37.0
 
 ## Build
 build:
@@ -107,7 +107,7 @@ vet:
 	go vet ./...
 
 tidy:
-	go mod tidy -compat=1.26
+	go mod tidy -compat=1.27
 
 ## Docker
 docker-build:

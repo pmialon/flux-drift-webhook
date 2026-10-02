@@ -49,7 +49,7 @@ kind load docker-image "${WEBHOOK_IMAGE}" --name "${KIND_CLUSTER_NAME}"
 # Side-load podinfo so its pods actually run without the cluster reaching a
 # registry. Non-fatal: the enforce tests act on the Deployment object at
 # admission time and do not need the pods to be up.
-PODINFO_IMAGE="${PODINFO_IMAGE:-ghcr.io/stefanprodan/podinfo:6.14.1}"
+PODINFO_IMAGE="${PODINFO_IMAGE:-ghcr.io/stefanprodan/podinfo:6.15.0}"
 log "Side-loading ${PODINFO_IMAGE}..."
 if docker pull -q "${PODINFO_IMAGE}" >/dev/null 2>&1; then
     kind load docker-image "${PODINFO_IMAGE}" --name "${KIND_CLUSTER_NAME}"

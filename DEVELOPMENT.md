@@ -4,7 +4,7 @@ How to build, test and run `flux-drift-webhook` locally. The conventions here mi
 community's.
 
 ## Prerequisites
-- **Go 1.26.6+**
+- **Go 1.27.1+**
 - **kustomize 5.4+** and **kubectl**
 - **Docker** or **Podman** (for image builds / e2e)
 - **golangci-lint v2** (for `make lint`)
@@ -22,7 +22,7 @@ make test-race       # unit tests with the race detector (requires CGO)
 make fuzz-smoketest  # run each native Go fuzz target for FUZZ_TIME (default 20s)
 make envtest         # install the kube-apiserver/etcd binaries for the integration suite
 make lint            # golangci-lint
-make fmt vet tidy    # format, vet, and tidy go.mod (-compat=1.26)
+make fmt vet tidy    # format, vet, and tidy go.mod (-compat=1.27)
 make verify          # full local gate: fmt+vet+tidy+generate+lint+build+test+manifests + clean-tree check
 make verify-docker   # build the image and smoke-test its --help entrypoint
 make ci              # local full-gate aggregate: verify + verify-docker + test-integration + fuzz-smoketest + test-e2e
@@ -36,7 +36,7 @@ make ci              # local full-gate aggregate: verify + verify-docker + test-
 - Integration tests are behind a build tag (`//go:build integration`): `make test-integration`. They
   run against a **real apiserver** via `fluxcd/pkg/runtime/testenv`, so they depend on `make envtest`,
   which installs the `kube-apiserver`/`etcd` binaries through `setup-envtest` (exporting
-  `KUBEBUILDER_ASSETS`, `ENVTEST_K8S_VERSION=1.36.0` with a `1.35.0` fallback).
+  `KUBEBUILDER_ASSETS`, `ENVTEST_K8S_VERSION=1.37.0` with a `1.36.0` fallback).
   > **Note:** those binary assets are fetched from an external GitHub index, **not** via
   > `GOPROXY`; GitHub-hosted runners can fetch them over the network, so in CI `test-integration`
   > runs as a **required automatic gate**. Fallbacks in restricted networks: pre-seed the assets

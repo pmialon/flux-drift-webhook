@@ -30,7 +30,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -44,7 +44,7 @@ const itWebhookName = "flux-drift-webhook-it.fluxcd.io"
 
 // newReconciler builds a reconciler wired like production (cmd/webhook/main.go),
 // against the cacheless k8sClient.
-func newReconciler(t *testing.T, rec record.EventRecorder) *WebhookConfigReconciler {
+func newReconciler(t *testing.T, rec events.EventRecorder) *WebhookConfigReconciler {
 	t.Helper()
 	return &WebhookConfigReconciler{
 		Client:           k8sClient,
@@ -81,7 +81,7 @@ func TestIntegration_Reconcile_SSA(t *testing.T) {
 	ctx := ctrl.LoggerInto(context.Background(), testr.New(t))
 	seedVWC(t, g)
 
-	rec := record.NewFakeRecorder(16)
+	rec := events.NewFakeRecorder(16)
 	r := newReconciler(t, rec)
 
 	res, err := r.Reconcile(ctx, ctrl.Request{
@@ -152,7 +152,7 @@ func TestIntegration_Reconcile_FromScratchRecreation(t *testing.T) {
 		g.Expect(client.IgnoreNotFound(k8sClient.Delete(context.Background(), vwc))).To(Succeed())
 	})
 
-	rec := record.NewFakeRecorder(16)
+	rec := events.NewFakeRecorder(16)
 	r := newReconciler(t, rec)
 
 	_, err := r.Reconcile(ctx, ctrl.Request{

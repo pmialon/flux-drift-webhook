@@ -77,7 +77,7 @@ func Fuzz_FluxManagedFields(f *testing.F) {
 			{
 				Manager:   FluxKustomizeManager,
 				Operation: metav1.ManagedFieldsOperationApply,
-				FieldsV1:  &metav1.FieldsV1{Raw: raw},
+				FieldsV1:  metav1.NewFieldsV1(string(raw)),
 			},
 		}
 		_, _ = FluxManagedFields(entries)
