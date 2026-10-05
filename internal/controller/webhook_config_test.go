@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -163,7 +163,7 @@ func TestReconcile_EmitsConfigUpdatedEvent(t *testing.T) {
 		Build()
 
 	m := metrics.NewMetricsWithRegistry(prometheus.NewRegistry())
-	recorder := record.NewFakeRecorder(10)
+	recorder := events.NewFakeRecorder(10)
 
 	r := &WebhookConfigReconciler{
 		Client:           fakeClient,
@@ -211,7 +211,7 @@ func TestReconcile_RecreationEmitsWarning(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	m := metrics.NewMetricsWithRegistry(prometheus.NewRegistry())
-	recorder := record.NewFakeRecorder(10)
+	recorder := events.NewFakeRecorder(10)
 
 	r := &WebhookConfigReconciler{
 		Client:           fakeClient,

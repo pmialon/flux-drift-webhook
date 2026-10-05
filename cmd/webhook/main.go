@@ -227,8 +227,8 @@ func main() {
 
 	// Local Kubernetes Events only (no external notification-controller webhook),
 	// hence an empty webhook address. events.Recorder wraps the manager's
-	// recorder and satisfies record.EventRecorder.
-	eventRecorder, err := events.NewRecorder(mgr, log.WithName("event-recorder"), "", "flux-drift-webhook")
+	// events/v1 recorder and satisfies k8s.io/client-go/tools/events.EventRecorder.
+	eventRecorder, err := events.NewRecorder(log.WithName("event-recorder"), "", "flux-drift-webhook", events.WithManager(mgr))
 	if err != nil {
 		log.Error(err, "unable to create event recorder")
 		os.Exit(1)

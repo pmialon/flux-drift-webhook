@@ -104,7 +104,7 @@ func fluxKustomizeManagedFields() []metav1.ManagedFieldsEntry {
 		{
 			Manager:   "kustomize-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 		},
 	}
 }
@@ -246,7 +246,7 @@ func TestHandle_BypassAnnotation_SingleStepAttackDenied(t *testing.T) {
 		{
 			Manager:   "kustomize-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 		},
 	}
 
@@ -407,7 +407,7 @@ func TestHandle_ParseErrorOldObjectDenied(t *testing.T) {
 		{
 			Manager:   "kustomize-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 		},
 	}
 
@@ -434,7 +434,7 @@ func TestHandle_ParseErrorNewObjectDenied(t *testing.T) {
 		{
 			Manager:   "kustomize-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 		},
 	}
 
@@ -504,7 +504,7 @@ func TestHandle_UpdateFluxManagedFieldConflictDenied(t *testing.T) {
 		{
 			Manager:   "kustomize-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 		},
 	}
 
@@ -532,7 +532,7 @@ func TestHandle_UpdateNonFluxFieldsAllowed(t *testing.T) {
 		{
 			Manager:   "kustomize-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 		},
 	}
 
@@ -637,7 +637,7 @@ func TestHandle_HelmRelease_DeleteDenied(t *testing.T) {
 		{
 			Manager:   "helm-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 		},
 	}
 	oldRaw := buildTestJSON(fluxHelmLabels, nil, managedFields, nil)
@@ -805,7 +805,7 @@ func TestHandle_HelmRelease_UpdateFieldConflictDenied(t *testing.T) {
 		{
 			Manager:   "helm-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 		},
 	}
 
@@ -1272,7 +1272,7 @@ func realisticDeploymentManagedFields() []metav1.ManagedFieldsEntry {
 	return []metav1.ManagedFieldsEntry{{
 		Manager:   "kustomize-controller",
 		Operation: metav1.ManagedFieldsOperationApply,
-		FieldsV1: &metav1.FieldsV1{Raw: []byte(`{
+		FieldsV1: metav1.NewFieldsV1(`{
 			"f:metadata":{"f:labels":{"f:kustomize.toolkit.fluxcd.io/name":{},"f:kustomize.toolkit.fluxcd.io/namespace":{}}},
 			"f:spec":{
 				"f:template":{
@@ -1283,7 +1283,7 @@ func realisticDeploymentManagedFields() []metav1.ManagedFieldsEntry {
 					}
 				}
 			}
-		}`)},
+		}`),
 	}}
 }
 
@@ -1315,7 +1315,7 @@ func TestHandle_UpdateContainerImageDenied(t *testing.T) {
 	transferred := []metav1.ManagedFieldsEntry{{
 		Manager:   "kustomize-controller",
 		Operation: metav1.ManagedFieldsOperationApply,
-		FieldsV1: &metav1.FieldsV1{Raw: []byte(`{
+		FieldsV1: metav1.NewFieldsV1(`{
 			"f:metadata":{"f:labels":{"f:kustomize.toolkit.fluxcd.io/name":{},"f:kustomize.toolkit.fluxcd.io/namespace":{}}},
 			"f:spec":{
 				"f:template":{
@@ -1326,7 +1326,7 @@ func TestHandle_UpdateContainerImageDenied(t *testing.T) {
 					}
 				}
 			}
-		}`)},
+		}`),
 	}}
 
 	oldRaw := deploymentJSON(fluxKustomizeLabels, realisticDeploymentManagedFields(), "nginx:1.0", 1)
@@ -1704,7 +1704,7 @@ func TestHandle_HelmReconcileDisabledNotHonoured(t *testing.T) {
 	helmManagedFields := []metav1.ManagedFieldsEntry{{
 		Manager:   "helm-controller",
 		Operation: metav1.ManagedFieldsOperationApply,
-		FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+		FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 	}}
 	oldRaw := buildTestJSON(fluxHelmLabels, reconcileDisabledAnnotations, helmManagedFields, nil)
 	req := createAdmissionRequest(admissionv1.Delete, runtime.RawExtension{Raw: oldRaw}, "default", "test-pod")
@@ -1812,7 +1812,7 @@ func fluxManagedFieldsRaw(fieldsV1 string) []metav1.ManagedFieldsEntry {
 	return []metav1.ManagedFieldsEntry{{
 		Manager:   "kustomize-controller",
 		Operation: metav1.ManagedFieldsOperationApply,
-		FieldsV1:  &metav1.FieldsV1{Raw: []byte(fieldsV1)},
+		FieldsV1:  metav1.NewFieldsV1(fieldsV1),
 	}}
 }
 
@@ -1921,13 +1921,13 @@ func TestHandle_UpdateIgnoreHelmOwnerDenied(t *testing.T) {
 		[]metav1.ManagedFieldsEntry{{
 			Manager:   "helm-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:replicas":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 		}}, "nginx:1.0", 1)
 	newRaw := deploymentJSON(fluxHelmLabels,
 		[]metav1.ManagedFieldsEntry{{
 			Manager:   "helm-controller",
 			Operation: metav1.ManagedFieldsOperationApply,
-			FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:replicas":{}}}`)},
+			FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 		}}, "nginx:1.0", 5)
 
 	resp := handler.Handle(context.Background(), deploymentUpdateRequest(oldRaw, newRaw))

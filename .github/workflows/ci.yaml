@@ -10,10 +10,10 @@ permissions:
   contents: read
 
 env:
-  KUBECONFORM_VERSION: v0.6.7
+  KUBECONFORM_VERSION: v0.8.0
   # sha256 of kubeconform-linux-amd64.tar.gz at that version — the only
   # downloaded executable in the pipeline, so its content is pinned too.
-  KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
 
 jobs:
   lint:
@@ -29,7 +29,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
 
   test:
     runs-on: ubuntu-latest
@@ -90,7 +90,7 @@ jobs:
         # The declared floor (1.30 — CEL matchConditions GA, kubeVersion
         # ">=1.30.0-0" in the chart) and the latest minor: without the floor
         # entry, the oldest supported apiserver is never actually exercised.
-        envtest-k8s-version: ["1.30.3", "1.36.0"]
+        envtest-k8s-version: ["1.30.3", "1.37.0"]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,7 +164,7 @@ jobs:
       - name: Install kustomize if missing
         run: |
           if ! command -v kustomize >/dev/null 2>&1; then
-            curl -sSLf "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
+            curl -sSLf "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.8.2/kustomize_v5.8.2_linux_amd64.tar.gz" \
               | tar -xz kustomize
             sudo install -m 0755 kustomize /usr/local/bin/kustomize
           fi

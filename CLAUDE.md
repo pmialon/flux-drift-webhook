@@ -88,7 +88,7 @@ make fuzz-smoketest
 # Run linter (golangci-lint; gosec runs via the gosec linter)
 make lint
 
-# Format, vet, and tidy (tidy uses `-compat=1.26`)
+# Format, vet, and tidy (tidy uses `-compat=1.27`)
 make fmt
 make vet
 make tidy
@@ -214,7 +214,7 @@ Leader election is **opt-in** (default off) and driven by the `fluxcd/pkg/runtim
 - **Probes**: `probes.SetupChecks` (ping only), plus two `readyz` checks — `webhook-server`, gated on the webhook server's `StartedChecker()` so the pod only reports Ready once the TLS listener is serving, and `cache-sync`, gated on the informer caches having completed their initial sync. controller-runtime deliberately starts the webhook server **before** the caches, so without the second check the pod takes admission traffic while every cache-backed lookup still fails — and those are fail-closed (namespace-terminating cascades, CREATE inventory, tenant SA resolution). The `cachesSynced` runnable reports `NeedLeaderElection() == false` so it runs on every replica; a bare `Runnable` would land in the leader-election group and leave non-leaders permanently unready
 - **Informer pre-warm**: `warmInformerCaches` registers the informers the handler reads (`webhook.CachedObjectTypes()`: Namespace as `PartialObjectMetadata`, Kustomization, HelmRelease) before `mgr.Start`, so they are covered by the initial cache sync instead of being created lazily by the first request that needs them. A type whose CRD is absent (e.g. no helm-controller) is skipped with a warning, not fatal
 - **Cache diet**: the informers are cluster-wide and grow with the GitOps estate, while the container runs under a small memory limit, so `webhook.CacheOptions()` caches only what the handler reads: every object loses `.metadata.managedFields` (the handler reads managedFields from the admission request, never the cache); Kustomizations/HelmReleases are stripped to `.spec.serviceAccountName`, `.spec.ignore` and `.status.inventory` (`StripOwnerForCache`); Namespaces are watched **metadata-only** (`NamespaceMetadata`, a `PartialObjectMetadata` read — the handler needs only labels and `deletionTimestamp`). The dispatch happens in the `DefaultTransform`, **not** `cache.Options.ByObject`: ByObject keys are REST-mapped when the cache is built, which would make manager construction fail on a cluster where a CRD (HelmRelease) is absent
-- **Events**: a `fluxcd/pkg/runtime/events` recorder wired into the VWC controller (local Kubernetes Events only — no external notification-controller webhook)
+- **Events**: a `fluxcd/pkg/runtime/events` recorder (`events.k8s.io/v1` API since runtime v0.114.0, built with `events.WithManager`) wired into the VWC controller, which depends only on the client-go `tools/events.EventRecorder` interface (local Kubernetes Events only — no external notification-controller webhook). The ClusterRole grants `create`/`patch` on `events` in both the core and `events.k8s.io` groups
 
 > **Design note:** the `fluxcd/pkg/runtime/client` package is intentionally **not** imported to keep the binary lean — its impersonator pulls in `kubectl`/`kustomize`. The `--kube-api-qps`/`--kube-api-burst` flags are applied directly to the rest config from `ctrl.GetConfigOrDie` instead.
 
@@ -295,7 +295,7 @@ Every reason is a constant in `internal/webhook/reasons.go`, and the exported `A
 
 ## Prerequisites
 
-- Go 1.26.6
+- Go 1.27.1
 - Kubernetes 1.30+ (CEL `matchConditions` are GA from 1.30)
 - cert-manager installed in cluster
 - FluxCD installed in `flux-system` namespace
@@ -305,13 +305,13 @@ Every reason is a constant in `internal/webhook/reasons.go`, and the exported `A
 
 | Dependency | Version |
 |------------|---------|
-| `sigs.k8s.io/controller-runtime` | v0.24.1 |
-| `k8s.io/{api,apimachinery,client-go}` | v0.36.3 |
+| `sigs.k8s.io/controller-runtime` | v0.25.2 |
+| `k8s.io/{api,apimachinery,client-go}` | v0.37.1 |
 | `sigs.k8s.io/structured-merge-diff/v6` | v6.4.2 |
 | `github.com/spf13/pflag` | v1.0.10 |
-| `github.com/fluxcd/pkg/runtime` | v0.111.0 |
+| `github.com/fluxcd/pkg/runtime` | v0.114.0 |
 
-For the integration suite, `setup-envtest` provides the envtest assets (`ENVTEST_K8S_VERSION` `1.36.0`, fall back to `1.35.0` if `1.36.0` is not mirrored).
+For the integration suite, `setup-envtest` provides the envtest assets (`ENVTEST_K8S_VERSION` `1.37.0`, fall back to `1.36.0` if `1.37.0` is not mirrored).
 
 ## Testing Strategy
 
@@ -437,7 +437,7 @@ Three GitHub Actions workflows live in `.github/workflows/`.
 | `test` | `go vet`, `gofmt` check, unit tests with `-race` and coverage, `govulncheck` (symbol-level CVE scan) |
 | `verify-codegen` | fails if `go mod tidy` / `go generate` leave the tree dirty |
 | `fuzz` | `make fuzz-smoketest` (native Go fuzz targets) |
-| `integration` | `make test-integration` (envtest against a real apiserver), matrixed over `ENVTEST_K8S_VERSION` 1.30.3 (the declared floor) and 1.36.0 |
+| `integration` | `make test-integration` (envtest against a real apiserver), matrixed over `ENVTEST_K8S_VERSION` 1.30.3 (the declared floor) and 1.37.0 |
 | `manifests` | `kubeconform` validation of `deploy/base` and both overlays |
 | `helm` | `helm lint` plus rendered-template `kubeconform` validation |
 | `e2e` | `make test-e2e` (kind cluster, audit suite then enforce suite — the only automated proof the webhook blocks) |

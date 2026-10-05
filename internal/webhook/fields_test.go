@@ -48,7 +48,7 @@ func TestFluxManagedFields(t *testing.T) {
 				{
 					Manager:   "kustomize-controller",
 					Operation: metav1.ManagedFieldsOperationApply,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:replicas":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 				},
 			},
 			wantEmpty: false,
@@ -59,7 +59,7 @@ func TestFluxManagedFields(t *testing.T) {
 				{
 					Manager:   "helm-controller",
 					Operation: metav1.ManagedFieldsOperationApply,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 				},
 			},
 			wantEmpty: false,
@@ -70,7 +70,7 @@ func TestFluxManagedFields(t *testing.T) {
 				{
 					Manager:   "kubectl",
 					Operation: metav1.ManagedFieldsOperationApply,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:replicas":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 				},
 			},
 			wantEmpty: true,
@@ -81,7 +81,7 @@ func TestFluxManagedFields(t *testing.T) {
 				{
 					Manager:   "kustomize-controller",
 					Operation: metav1.ManagedFieldsOperationUpdate,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:replicas":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 				},
 			},
 			wantEmpty: true,
@@ -92,17 +92,17 @@ func TestFluxManagedFields(t *testing.T) {
 				{
 					Manager:   "kubectl",
 					Operation: metav1.ManagedFieldsOperationApply,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:metadata":{"f:labels":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:metadata":{"f:labels":{}}}`),
 				},
 				{
 					Manager:   "kustomize-controller",
 					Operation: metav1.ManagedFieldsOperationApply,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:replicas":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 				},
 				{
 					Manager:   "horizontal-pod-autoscaler",
 					Operation: metav1.ManagedFieldsOperationApply,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:replicas":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 				},
 			},
 			wantEmpty: false,
@@ -113,12 +113,12 @@ func TestFluxManagedFields(t *testing.T) {
 				{
 					Manager:   "kustomize-controller",
 					Operation: metav1.ManagedFieldsOperationApply,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:replicas":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 				},
 				{
 					Manager:   "helm-controller",
 					Operation: metav1.ManagedFieldsOperationApply,
-					FieldsV1:  &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:template":{}}}`)},
+					FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:template":{}}}`),
 				},
 			},
 			wantEmpty: false,
