@@ -9,6 +9,27 @@ read the **Breaking / upgrade notes** before widening a version range).
 
 Nothing yet.
 
+## [0.3.1] - 2026-10-05
+
+Maintenance release: dependency and toolchain refresh.
+
+### Upgrade notes
+
+- The events recorder now uses the `events.k8s.io/v1` API
+  (`fluxcd/pkg/runtime` v0.114.0). The shipped ClusterRole (base and chart)
+  grants `create`/`patch` on `events` in `events.k8s.io` as well as the core
+  group; if you maintain your own RBAC, add that grant or the VWC controller's
+  Events are denied.
+
+### Changed
+
+- Go 1.27.1, controller-runtime v0.25.2, `k8s.io/*` v0.37.1,
+  `fluxcd/pkg/runtime` v0.114.0 (#43, closes #39).
+- CI: envtest assets 1.37.0 (matrix 1.30.3/1.37.0), golangci-lint v2.14.0,
+  kubeconform v0.8.0; GitHub Actions and Docker base image bumps.
+- e2e vendored manifests: cert-manager v1.21.2, prometheus-operator v0.94.1,
+  Flux v2.9.6, podinfo 6.15.0.
+
 ## [0.3.0] - 2026-08-26
 
 The full remediation of the 2026-07-31 external review: all 41 findings
@@ -109,7 +130,8 @@ Initial release: field-level drift prevention for FluxCD-managed resources
 (SSA managedFields-based), audit and enforce modes, Kustomize manifests and
 Helm chart, cosign-signed multi-arch images with SBOM and SLSA provenance.
 
-[Unreleased]: https://github.com/pmialon/flux-drift-webhook/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pmialon/flux-drift-webhook/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/pmialon/flux-drift-webhook/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/pmialon/flux-drift-webhook/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pmialon/flux-drift-webhook/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pmialon/flux-drift-webhook/releases/tag/v0.1.0
