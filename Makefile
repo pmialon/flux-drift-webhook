@@ -16,15 +16,15 @@ FUZZ_TIME ?= 20s
 # ENVTEST_INSTALLED_ONLY=1, or point --index at a mirror.
 # Third-party manifests vendored under e2e/ so `make test-e2e` runs offline
 # straight after a clone. Refresh them with `make e2e-vendor`.
-CERT_MANAGER_VERSION ?= v1.21.2
-PROMETHEUS_OPERATOR_VERSION ?= v0.94.1
+CERT_MANAGER_VERSION ?= v1.21.3
+PROMETHEUS_OPERATOR_VERSION ?= v0.95.1
 # Flux itself, so the e2e suite exercises the owner-inventory paths against real
 # Kustomization/HelmRelease CRDs rather than a cluster where they do not exist.
-FLUX_VERSION ?= v2.9.6
+FLUX_VERSION ?= v2.10.0
 # podinfo, used as a realistic workload in the enforce tests: its Deployment
 # declares no .spec.replicas and it ships an HPA, so the Flux-owns-template /
 # autoscaler-owns-replicas case is testable without inventing a workload.
-PODINFO_VERSION ?= 6.15.0
+PODINFO_VERSION ?= 6.17.0
 
 LOCALBIN ?= $(CURDIR)/bin
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2

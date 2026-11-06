@@ -295,7 +295,7 @@ Every reason is a constant in `internal/webhook/reasons.go`, and the exported `A
 
 ## Prerequisites
 
-- Go 1.27.1
+- Go 1.27.3
 - Kubernetes 1.30+ (CEL `matchConditions` are GA from 1.30)
 - cert-manager installed in cluster
 - FluxCD installed in `flux-system` namespace
@@ -306,10 +306,10 @@ Every reason is a constant in `internal/webhook/reasons.go`, and the exported `A
 | Dependency | Version |
 |------------|---------|
 | `sigs.k8s.io/controller-runtime` | v0.25.2 |
-| `k8s.io/{api,apimachinery,client-go}` | v0.37.1 |
+| `k8s.io/{api,apimachinery,client-go}` | v0.37.2 |
 | `sigs.k8s.io/structured-merge-diff/v6` | v6.4.2 |
-| `github.com/spf13/pflag` | v1.0.10 |
-| `github.com/fluxcd/pkg/runtime` | v0.114.0 |
+| `github.com/spf13/pflag` | v1.1.0 |
+| `github.com/fluxcd/pkg/runtime` | v0.122.0 |
 
 For the integration suite, `setup-envtest` provides the envtest assets (`ENVTEST_K8S_VERSION` `1.37.0`, fall back to `1.36.0` if `1.37.0` is not mirrored).
 
