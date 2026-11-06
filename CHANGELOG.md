@@ -9,6 +9,27 @@ read the **Breaking / upgrade notes** before widening a version range).
 
 Nothing yet.
 
+## [0.3.2] - 2026-11-06
+
+Maintenance release: dependency and toolchain refresh clearing the Go stdlib
+and `golang.org/x/net` CVEs surfaced by `govulncheck` and the weekly Trivy
+image scan (#45).
+
+### Changed
+
+- Go 1.27.3, `k8s.io/*` v0.37.2, `fluxcd/pkg/runtime` v0.122.0,
+  `prometheus/client_golang` v1.25.0, `spf13/pflag` v1.1.0, `golang.org/x/net`
+  v0.62.0 (closes #45, #46, #47, #48, #49, #50).
+- CI: `golangci-lint` v2.15.0, `govulncheck` v1.9.0, `kustomize` fallback
+  v5.8.3; GitHub Actions (`actions/upload-artifact` v7.0.2, `helm/kind-action`
+  v1.15.2, `docker/login-action` v4.8.0, `sigstore/cosign-installer` v4.1.3,
+  `anchore/sbom-action` v0.24.3, `goreleaser/goreleaser-action` v7.3.0) and
+  Docker base image bumps (`tonistiigi/xx:1.10.0`, `golang:1.27.3-alpine`,
+  `gcr.io/distroless/static:nonroot`).
+- e2e vendored manifests: cert-manager v1.21.3, prometheus-operator v0.95.1,
+  Flux v2.10.0, podinfo 6.17.0; single-platform `ctr images import` fallback
+  for `podinfo` side-loading on Docker Engine with the containerd image store.
+
 ## [0.3.1] - 2026-10-05
 
 Maintenance release: dependency and toolchain refresh.
@@ -130,7 +151,8 @@ Initial release: field-level drift prevention for FluxCD-managed resources
 (SSA managedFields-based), audit and enforce modes, Kustomize manifests and
 Helm chart, cosign-signed multi-arch images with SBOM and SLSA provenance.
 
-[Unreleased]: https://github.com/pmialon/flux-drift-webhook/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/pmialon/flux-drift-webhook/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/pmialon/flux-drift-webhook/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/pmialon/flux-drift-webhook/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/pmialon/flux-drift-webhook/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pmialon/flux-drift-webhook/compare/v0.1.0...v0.2.0
